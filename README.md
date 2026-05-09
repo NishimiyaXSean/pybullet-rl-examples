@@ -1,5 +1,5 @@
 > [!TIP]
-> This site is built on https://github.com/learnsyslab/gym-pybullet-drones.
+> Acknowledgment: The core simulation environment of this repository is built upon the excellent work of https://github.com/learnsyslab/gym-pybullet-drones. We deeply appreciate their contribution to the open-source community. My modifications mainly focus on the reinforcement learning algorithms and target tracking logic located in the examples/ folder.
 
 # gym-pybullet-drones
 
