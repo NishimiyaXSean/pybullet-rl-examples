@@ -5,10 +5,14 @@ examples/test.py
 
 # NumPy saves and videos
 results/
+results_mission/
+trash/
 tmp/
 
 # Learning results
 experiments/learning/results/save-*
+*.pkl
+*.zip
 
 # Betaflight
 betaflight_sitl/
