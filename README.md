@@ -1,7 +1,5 @@
 > [!TIP]
-> For **symbolic dynamics and constraints**, also try our [`safe-control-gym`](https://github.com/utiasDSL/safe-control-gym)
->
-> For **ROS2, PX4, ArduPilot, YOLO, and LiDAR**, also try our [`aerial-autonomy-stack`](https://github.com/JacopoPan/aerial-autonomy-stack)
+> This site is built on https://github.com/learnsyslab/gym-pybullet-drones.
 
 # gym-pybullet-drones
 
@@ -13,8 +11,6 @@ This is a minimalist refactoring of the original `gym-pybullet-drones` repositor
 
 ## Installation
 
-Tested on Intel x64/Ubuntu 22.04 and Apple Silicon/macOS 14.1.
-
 ```sh
 git clone https://github.com/utiasDSL/gym-pybullet-drones.git
 cd gym-pybullet-drones/
@@ -22,10 +18,6 @@ cd gym-pybullet-drones/
 conda create -n drones python=3.10
 conda activate drones
 
-pip3 install --upgrade pip
-pip3 install -e . # if needed, `sudo apt install build-essential` to install `gcc` and build `pybullet`
-
-# check installed packages with `conda list`, deactivate with `conda deactivate`, remove with `conda remove -n drones --all`
 ```
 
 ## Use
