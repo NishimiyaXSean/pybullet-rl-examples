@@ -19,6 +19,8 @@ pip install -e .
 
 ## Use
 
+With trained models, you can easily run tests in several missions.
+
 ```sh
 cd gym-pybullet-drones/examples
 python mission_v1.py
