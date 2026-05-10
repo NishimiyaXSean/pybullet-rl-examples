@@ -5,7 +5,7 @@
 
 This repository is for displaying reinforcement learning examples of pybullet drones.
 
-<img src="gym_pybullet_drones/assets/helix.gif" alt="formation flight" width="325"> <img src="gym_pybullet_drones/assets/helix.png" alt="control info" width="425">
+<img src="gym_pybullet_drones/assets/episode_4_trajectory.png" alt="rl example_1" width="450"><img src="gym_pybullet_drones/assets/episode_7_trajectory.png" alt="rl example_2" width="450">
 
 ## Installation
 
@@ -19,7 +19,10 @@ pip install -e .
 
 ## Use
 
-
-<img src="gym_pybullet_drones/assets/episode_4_trajectory.png" alt="rl example_1" width="375"><img src="gym_pybullet_drones/assets/episode_5_trajectory.png" alt="rl example_2" width="375">
-
+```sh
+cd gym-pybullet-drones/examples
+python mission_v1.py
+python mission_v2.py
+---
+```
 
