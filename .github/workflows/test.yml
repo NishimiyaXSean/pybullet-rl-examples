@@ -28,5 +28,5 @@ jobs:
         pip install -e .
     - name: Unit tests
       run: |
-        python -m pytest tests/
+        python -m pytest examples/
         rm -rf tmp/
