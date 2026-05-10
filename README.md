@@ -20,6 +20,6 @@ pip install -e .
 ## Use
 
 
-<img src="gym_pybullet_drones/assets/episode_4_trajectory" alt="rl example_1" width="375"><img src="gym_pybullet_drones/assets/episode_5_trajectory" alt="rl example_2" width="375">
+<img src="gym_pybullet_drones/assets/episode_4_trajectory.png" alt="rl example_1" width="375"><img src="gym_pybullet_drones/assets/episode_5_trajectory.png" alt="rl example_2" width="375">
 
 
