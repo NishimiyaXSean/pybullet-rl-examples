@@ -44,7 +44,6 @@ class Drone1v1MARLEnv(ParallelEnv):
             "evader_0": DSLPIDControl(drone_model=DroneModel.CF2X)
         }
         
-
         self.CTRL_FREQ = 60
         self.is_manual_mode = False
 
@@ -92,6 +91,82 @@ class Drone1v1MARLEnv(ParallelEnv):
         info_dict = {agent: {} for agent in self.agents}
         
         return obs_dict, info_dict
+    
+    def _compute_obs(self, agent):
+        """
+        计算指定智能体（agent）的第一人称局部观测值
+        """
+        # 1. 确定“我”和“敌机”的底层物理 ID
+        my_id = 0 if agent == "attacker_0" else 1
+        enemy_id = 1 - my_id  # 对方的 ID
+
+        # 2. 获取双方的绝对物理状态
+        my_state = self.pyb_env._getDroneStateVector(my_id)
+        enemy_state = self.pyb_env._getDroneStateVector(enemy_id)
+
+        my_pos = my_state[0:3]
+        my_vel = my_state[10:13]
+        my_rpy = my_state[7:10]         # 自身姿态 (Roll, Pitch, Yaw)
+        my_ang_vel = my_state[13:16]    # 自身角速度
+        my_z_height = my_state[2]       # 自身绝对高度
+
+        enemy_pos = enemy_state[0:3]
+        enemy_vel = enemy_state[10:13]
+
+        # 3. 核心坐标转换：构建“我”的机头坐标系 (基于 Yaw)
+        # 提取我在这个物理帧的真实朝向
+        my_yaw = my_rpy[2] 
+        my_quat = p.getQuaternionFromEuler([0, 0, my_yaw])
+        _, inv_quat = p.invertTransform([0, 0, 0], my_quat)
+
+        # 4. 计算相对变量，并投影到“我”的第一人称坐标系中
+        # --- A. 敌机相对我的位置 ---
+        world_rel_pos = enemy_pos - my_pos
+        local_rel_pos, _ = p.multiplyTransforms([0, 0, 0], inv_quat, world_rel_pos, [0, 0, 0, 1])
+        local_rel_pos = np.array(local_rel_pos) 
+
+        # --- B. 我的局部速度 ---
+        local_vel, _ = p.multiplyTransforms([0, 0, 0], inv_quat, my_vel, [0, 0, 0, 1])
+        local_vel = np.array(local_vel)
+
+        # --- C. 我的局部角速度 ---
+        local_ang_vel, _ = p.multiplyTransforms([0, 0, 0], inv_quat, my_ang_vel, [0, 0, 0, 1])
+        local_ang_vel = np.array(local_ang_vel)
+
+        # --- D. 敌机在我的坐标系下的绝对速度 ---
+        local_enemy_vel, _ = p.multiplyTransforms([0, 0, 0], inv_quat, enemy_vel, [0, 0, 0, 1])
+        local_enemy_vel = np.array(local_enemy_vel)
+
+        # --- E. 我当前的虚拟引导点 ---
+        world_virt_pos = self.current_target_pos[agent] - my_pos
+        local_virt_pos, _ = p.multiplyTransforms([0, 0, 0], inv_quat, world_virt_pos, [0, 0, 0, 1])
+        local_virt_pos = np.array(local_virt_pos)
+
+        # 5. 物理量级缩放 (Pre-normalization) - 防止神经网络梯度爆炸
+        MAX_DIST = 15.0     
+        MAX_VEL = 5.0       
+        MAX_ANG_VEL = 2 * np.pi 
+
+        norm_local_rel_pos = local_rel_pos / MAX_DIST
+        norm_local_vel = local_vel / MAX_VEL
+        norm_rpy = my_rpy / np.pi                  
+        norm_local_ang_vel = local_ang_vel / MAX_ANG_VEL
+        norm_z_height = my_z_height / MAX_DIST     
+        norm_local_virt_pos = local_virt_pos / MAX_DIST
+        norm_local_enemy_vel = local_enemy_vel / MAX_VEL
+        
+        # 6. 拼接 19 维特征数组，形状严丝合缝
+        obs_array = np.concatenate([
+            norm_local_rel_pos,    # 3维: 敌机相对位置
+            norm_local_vel,        # 3维: 我的空速
+            norm_rpy,              # 3维: 我的姿态
+            norm_local_ang_vel,    # 3维: 我的角速度
+            [norm_z_height],       # 1维: 我的高度
+            norm_local_virt_pos,   # 3维: PID指引点
+            norm_local_enemy_vel   # 3维: 敌机速度矢量
+        ]).astype(np.float32)
+
+        return obs_array
 
     def step(self, actions):
         """
