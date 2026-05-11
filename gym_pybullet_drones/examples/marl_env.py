@@ -95,57 +95,136 @@ class Drone1v1MARLEnv(ParallelEnv):
 
     def step(self, actions):
         """
-        接受包含多个智能体动作的字典，执行物理步进，返回五个字典
+        核心物理步进函数，接收字典 actions = {"attacker_0": a1, "evader_0": a2}
         """
         # 如果所有飞机都坠毁了，提前返回空字典 (PettingZoo 保护机制)
         if not actions:
             self.agents = []
             return {}, {}, {}, {}, {}
 
-        # 1. 动作解析与物理驱动脚手架
-        # 原来的 step 里包含 frame_skip 的 repeat 循环和 PID 跟随逻辑
-        # 在这里，需要：
-        #   - 读取 actions["attacker_0"] 和 actions["evader_0"]
-        #   - 将离散动作转化为两者的期望偏航角(yaw)和期望速度
-        #   - 丢进 self.pids 分别计算 RPM
-        #   - 调用 self.pyb_env.step(np.vstack([rpm_attacker, rpm_evader]))
-        
-        # ==========================================
-        # TODO: 这里将填入双人 PID 与 BFM 解析逻辑
-        # ==========================================
+        # 统一决策频率 (Frame Skip)
+        # 强制规定 AI 每 0.2 秒做一次决策 (在 60Hz 的底层频率下，相当于推进 12 帧)
+        AI_DECISION_DT = 0.2 
+        dynamic_frame_skip = int(AI_DECISION_DT * self.CTRL_FREQ)
+        dt = 1 / self.CTRL_FREQ
 
-        # 2. 状态更新、碰撞检测与奖励计算
-        # 暂时用 Dummy 数据填充
-        obs_dict = {
-            "attacker_0": np.zeros(19, dtype=np.float32),
-            "evader_0": np.zeros(19, dtype=np.float32)
-        }
+        total_rewards = {agent: 0.0 for agent in self.agents}
+        terminations = {agent: False for agent in self.possible_agents}
+        truncations = {agent: False for agent in self.possible_agents}
+        infos = {agent: {} for agent in self.agents}
+
+        # 提取两架飞机的初始状态 (用于后续计算奖励和碰撞)
+        attacker_id = 0
+        evader_id = 1
+
+        for _ in range(dynamic_frame_skip):
+            # 获取最新物理状态
+            attacker_state = self.pyb_env._getDroneStateVector(attacker_id)
+            evader_state = self.pyb_env._getDroneStateVector(evader_id)
+            
+            attacker_pos = attacker_state[0:3]
+            evader_pos = evader_state[0:3]
+            dist = np.linalg.norm(attacker_pos - evader_pos)
+
+            # --- 动作解码与 PID 预处理 ---
+            # 建立 RPM 数组，准备传给 PyBullet (维度: 2台飞机 x 4个电机)
+            rpms = np.zeros((2, 4))
+            
+            for i, agent in enumerate(["attacker_0", "evader_0"]):
+                if agent not in actions: # 如果这架飞机已经坠毁，跳过
+                    continue
+                    
+                action_int = int(actions[agent])
+                n_x, n_n, mu = self.bfm_action_mapping[action_int]
+                
+                # 这里引入非对称设计：目标机(evader)的速度稍微慢一点
+                speed_multiplier = 0.8 if agent == "evader_0" else 1.0
+                vx = (1.5 + n_x * 0.8) * speed_multiplier
+                vy = 0.0
+                vz = (n_n * np.cos(mu) - 1.0) * 0.15
+                
+                yaw_rate = n_n * np.sin(mu) * 0.5
+                target_vel_local = np.array([vx, vy, vz])
+                
+                # 累加 Yaw 角度
+                self.target_yaws[agent] += yaw_rate * dt
+
+                # 生成一个没有俯仰(Pitch)和滚转(Roll)的纯净偏航姿态
+                pilot_quat = p.getQuaternionFromEuler([0, 0, self.target_yaws[agent]])
+                
+                vel_world, _ = p.multiplyTransforms([0,0,0], pilot_quat, target_vel_local, [0,0,0,1])
+                vel_world = np.array(vel_world)
+
+                self.user_input_pos[agent] += vel_world * dt
+                
+                # 高度限制防钻地
+                self.user_input_pos[agent][2] = np.clip(self.user_input_pos[agent][2], 1.0, 10.0)
+                
+                # PID 平滑追踪
+                self.current_target_pos[agent] = self.current_target_pos[agent] * (1 - self.SMOOTH_FACTOR) + self.user_input_pos[agent] * self.SMOOTH_FACTOR
+                
+                # 计算这台飞机的 RPM
+                agent_state = attacker_state if i == 0 else evader_state
+                rpm, _, _ = self.pids[agent].computeControl(
+                    control_timestep=dt,
+                    cur_pos=agent_state[0:3],       
+                    cur_quat=agent_state[3:7],     
+                    cur_vel=agent_state[10:13],     
+                    cur_ang_vel=agent_state[13:16],
+                    target_pos=self.current_target_pos[agent], 
+                    target_vel=vel_world,
+                    target_rpy=np.array([0, 0, self.target_yaws[agent]])
+                )
+                rpms[i, :] = rpm
+
+            # --- 底层物理步进 ---
+            # 把两台飞机的 RPM 打包丢给物理引擎
+            self.pyb_env.step(rpms)
+            self.step_counter += 1
+
+            # --- 碰撞与终止条件检测 (在每一小帧都要检测) ---
+            new_attacker_state = self.pyb_env._getDroneStateVector(attacker_id)
+            new_evader_state = self.pyb_env._getDroneStateVector(evader_id)
+            new_dist = np.linalg.norm(new_attacker_state[0:3] - new_evader_state[0:3])
+
+            # 1. 动能撞击 / 击杀成功
+            if new_dist < 0.15:
+                if "attacker_0" in actions: total_rewards["attacker_0"] += 300.0
+                if "evader_0" in actions: total_rewards["evader_0"] -= 300.0
+                terminations["attacker_0"] = True
+                terminations["evader_0"] = True
+                break # 直接结束本轮 AI 决策的 repeat 循环
+
+            # 2. 地板/天空边界惩罚
+            for agent, state in zip(["attacker_0", "evader_0"], [new_attacker_state, new_evader_state]):
+                if state[2] < 0.1 or state[2] > 12.0:
+                    total_rewards[agent] -= 100.0
+                    terminations[agent] = True
+
+            # (此处可插入细粒度奖励：ATA角惩罚、距离拉近奖励等)
+            # attacker_reward += (prev_dist - new_dist) * 20
+            # evader_reward   += (new_dist - prev_dist) * 10
+
+        # --- 退出 Frame Skip 循环，结算当前决策步的最终结果 ---
         
-        rewards_dict = {
-            "attacker_0": 0.0,
-            "evader_0": 0.0
-        }
+        # 判断是否超时 (Truncation)
+        if (self.step_counter / self.CTRL_FREQ) > self.EPISODE_LEN_SEC:
+            truncations["attacker_0"] = True
+            truncations["evader_0"] = True
         
-        terminations_dict = {
-            "attacker_0": False,
-            "evader_0": False
-        }
-        
-        truncations_dict = {
-            "attacker_0": False,
-            "evader_0": False
-        }
-        
-        infos_dict = {
-            "attacker_0": {},
-            "evader_0": {}
-        }
-        
-        # 3. 清理死亡的智能体 
-        # 如果某一方终止了，必须把它从 self.agents 列表中剔除
+        # 计算最新的观测值
+        observations = {}
+        for agent in self.agents:
+            if not terminations[agent]:
+                observations[agent] = self._compute_obs(agent)
+            else:
+                # 如果飞机死了，按 PettingZoo 规矩传零向量
+                observations[agent] = np.zeros(19, dtype=np.float32)
+
+        # 必须清理掉本回合死亡的智能体
         self.agents = [
-            agent for agent in self.agents
-            if not (terminations_dict[agent] or truncations_dict[agent])
+            a for a in self.agents
+            if not (terminations[a] or truncations[a])
         ]
 
-        return obs_dict, rewards_dict, terminations_dict, truncations_dict, infos_dict
+        return observations, total_rewards, terminations, truncations, infos
