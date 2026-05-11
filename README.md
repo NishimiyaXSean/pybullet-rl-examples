@@ -19,7 +19,7 @@ pip install -e .
 
 ## Use
 
-With trained models, you can easily run tests in several missions.
+Download the model zip and pkl file released in the release and place them in the examples directory. With trained models, you can easily run tests in several missions.
 
 ```sh
 cd gym-pybullet-drones/examples
@@ -30,7 +30,9 @@ python mission_v3.py
 
 <img src="gym_pybullet_drones/assets/episode_4_trajectory.png" alt="rl result_1" width="500"><img src="gym_pybullet_drones/assets/episode_7_trajectory.png" alt="rl result_2" width="500">
 
-## Train and Test
+## Train and Test Models
+
+### Basics
 
 If you want to know the basic function and usage of gym-pybullet, check the examples/basic folder, which contains minimun workbase and several easy demos by the author.
 
@@ -40,7 +42,9 @@ python learn.py
 python play.py # make sure the best_model.zip path is correct
 ```
 
-Addtionally, I also tried out some functions and saved them in the examples/start folder, which you can use as a tutorial demo.The main structrue of training file is shown in rl_flame.py.
+### Tutorial
+
+Addtionally, I also tried out some functions and saved them in the examples/start folder, which you can use as a tutorial demo. The main structrue of training file is shown in rl_flame.py.
 
 ```sh
 cd gym-pybullet-drones/examples/start
@@ -48,6 +52,8 @@ python tactical_test_v1.0.py
 # python tactical_test_v1.1.py 
 # python tactical_test_v3.2.py
 ```
+
+<img src="gym_pybullet_drones/assets/picture_1.png" alt="rl test_1" width="500">
 
 
 
