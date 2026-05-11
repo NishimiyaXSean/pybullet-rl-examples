@@ -25,6 +25,28 @@ With trained models, you can easily run tests in several missions.
 cd gym-pybullet-drones/examples
 python mission_v1.py
 python mission_v2.py
----
+python mission_v3.py
 ```
+
+## Train and Test
+
+If you want to know the basic function and usage of gym-pybullet, check the examples/basic folder, which contains minimun workbase and several easy demos by the author.
+
+```sh
+cd gym-pybullet-drones/examples/basic
+python learn.py 
+python play.py # make sure the best_model.zip path is correct
+```
+
+Addtionally, I also tried out some functions and saved them in the examples/start folder, which you can use as a tutorial demo.
+
+```sh
+cd gym-pybullet-drones/examples/start
+python tactical_test_v1.0.py
+# python tactical_test_v1.1.py 
+# python tactical_test_v3.2.py
+```
+
+
+
 
