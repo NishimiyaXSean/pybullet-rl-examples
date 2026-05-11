@@ -785,7 +785,7 @@ def test():
     obs = env.reset()
     episode_count = 0
     episode_step = 0
-    current_episode_id = 3
+    current_episode_id = 1
 
     while episode_count < 10: 
         action, _ = model.predict(obs, deterministic=True) # AI 思考并输出动作
