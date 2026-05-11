@@ -46,6 +46,23 @@ class Drone1v1MARLEnv(ParallelEnv):
         
         self.CTRL_FREQ = 60
         self.is_manual_mode = False
+        self.EPISODE_LEN_SEC = 25 # 回合最大时长
+        self.SMOOTH_FACTOR = 0.1  # PID 轨迹平滑系数
+
+        # BFM 动作库: {动作编号 : (切向过载 n_x, 法向过载 n_n, 滚转角 mu)}
+        self.bfm_action_mapping = {
+            0:  ( 0,  1,  0.0),            # a1: 匀速直飞
+            1:  ( 2,  1,  0.0),            # a2: 加速直飞
+            2:  (-2,  1,  0.0),            # a3: 减速直飞
+            3:  ( 0,  8,  0.0),            # a4: 跃升
+            4:  ( 0, -8,  0.0),            # a5: 俯冲
+            5:  ( 0,  8,  np.pi / 3.0),    # a6: 左转跃升
+            6:  ( 0, -8, -np.pi / 3.0),    # a7: 右转俯冲
+            7:  ( 0,  8, -np.pi / 3.0),    # a8: 右转跃升
+            8:  ( 0, -8,  np.pi / 3.0),    # a9: 左转俯冲
+            9:  ( 0,  2, -np.pi / 3.0),    # a10: 右转
+            10: ( 0,  2,  np.pi / 3.0)     # a11: 左转
+        }
 
         # 3. 字典化的观测空间与动作空间
         # 动作空间：两者均为 11 维离散动作 (BFM)
@@ -76,16 +93,27 @@ class Drone1v1MARLEnv(ParallelEnv):
         
         # 重置底层物理引擎
         raw_obs, _ = self.pyb_env.reset()
+
+        # 初始化时间步与两架飞机的局部追踪变量
+        self.step_counter = 0
+        self.target_yaws = {"attacker_0": 0.0, "evader_0": 0.0}
+        self.user_input_pos = {}
+        self.current_target_pos = {}
         
-        # 这里需要获取两架飞机的底层状态
-        # attacker_state = self.pyb_env._getDroneStateVector(0)
-        # evader_state = self.pyb_env._getDroneStateVector(1)
-        
-        # TODO: 编写计算各自身份视角的 _compute_obs 函数
-        # 暂时用零矩阵代替跑通流程
+        # 为每架飞机提取真实的初始物理位置
+        for i, agent in enumerate(self.agents):
+            initial_pos = self.pyb_env._getDroneStateVector(i)[0:3]
+            self.user_input_pos[agent] = initial_pos.copy()
+            self.current_target_pos[agent] = initial_pos.copy()
+
+        # 计算开局时的初始距离 (用于第一帧的奖励计算基准)
+        attacker_pos = self.pyb_env._getDroneStateVector(0)[0:3]
+        evader_pos = self.pyb_env._getDroneStateVector(1)[0:3]
+        self.prev_dist = np.linalg.norm(attacker_pos - evader_pos)
+    
         obs_dict = {
-            "attacker_0": np.zeros(19, dtype=np.float32),
-            "evader_0": np.zeros(19, dtype=np.float32)
+            "attacker_0": self._compute_obs("attacker_0"),
+            "evader_0": self._compute_obs("evader_0")
         }
         
         info_dict = {agent: {} for agent in self.agents}
@@ -333,8 +361,8 @@ class Drone1v1MARLEnv(ParallelEnv):
         
         # 判断是否超时 (Truncation)
         if (self.step_counter / self.CTRL_FREQ) > self.EPISODE_LEN_SEC:
-            truncations["attacker_0"] = True
-            truncations["evader_0"] = True
+            for agent in self.agents:
+                truncations[agent] = True
         
         # 计算最新的观测值
         observations = {}
