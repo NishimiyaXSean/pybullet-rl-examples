@@ -11,7 +11,7 @@ This repository is for displaying reinforcement learning examples of pybullet dr
 
 ```sh
 git clone https://github.com/NishimiyaXSean/pybullet-rl-examples.git
-cd gym-pybullet-drones/
+cd pybullet-rl-examples/
 conda create -n drone_rl python=3.10
 conda activate drone_rl
 pip install -e .
