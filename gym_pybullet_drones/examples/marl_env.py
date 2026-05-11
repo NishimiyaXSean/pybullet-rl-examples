@@ -257,6 +257,59 @@ class Drone1v1MARLEnv(ParallelEnv):
             self.pyb_env.step(rpms)
             self.step_counter += 1
 
+            # 计算两架飞机的当前距离和相对位置
+            rel_pos_world = evader_pos - attacker_pos
+            dist = np.linalg.norm(rel_pos_world)
+
+            # 计算距离变化率
+            frame_delta_dist = dist - self.prev_dist
+            self.prev_dist = dist
+
+            # 计算攻击机的 ATA (天线前置角 - 是否对准目标)
+            attacker_quat = p.getQuaternionFromEuler([0, 0, self.target_yaws["attacker_0"]])
+            rot_mat_A = p.getMatrixFromQuaternion(attacker_quat)
+            forward_vec_A = np.array([rot_mat_A[0], rot_mat_A[3], rot_mat_A[6]])
+            target_dir_A = rel_pos_world / (dist + 1e-6)
+            cos_theta_A = np.clip(np.dot(forward_vec_A, target_dir_A), -1.0, 1.0)
+            ata_angle_attacker = np.arccos(cos_theta_A)
+
+            # [角色 1] 攻击机 (Attacker) 奖励结算
+            if "attacker_0" in actions:
+                # 1. 靠近奖励 (缩短距离加分，被拉开扣分)
+                reward_A_progress = -frame_delta_dist * 20.0 
+                
+                # 2. 瞄准惩罚 (没对准就扣分)
+                reward_A_tracking = -(ata_angle_attacker / np.pi) * 2.0 * dt
+                
+                # 3. 时间惩罚 (逼迫速战速决)
+                reward_A_time = -0.1 * dt
+                
+                # 单帧结算
+                total_rewards["attacker_0"] += (reward_A_progress + reward_A_tracking + reward_A_time)
+
+            # [角色 2] 目标机 (Evader) 奖励结算
+            if "evader_0" in actions:
+                # 1. 逃逸奖励 (拉开距离加分，被靠近扣分)
+                reward_E_escape = frame_delta_dist * 15.0  # 权重可以和主机不对称
+                
+                # 2. 苟活奖励 
+                reward_E_survival = 0.1 * dt
+                
+                # 3. 智能规避奖励 (Jinking Reward)
+                reward_E_jinking = 0.0
+                # 如果主机距离小于 8 米，且主机的机头基本对准了自己 (ATA < 30度)
+                if dist < 8.0 and ata_angle_attacker < (np.pi / 6.0):
+                    # 提取目标机当前动作的法向过载 (n_n) 和滚转角 (mu)
+                    evader_action = int(actions["evader_0"])
+                    _, n_n, mu = self.bfm_action_mapping[evader_action]
+                    
+                    # 如果目标机正在做大过载转弯或爬升/俯冲 (n_n > 1.5)，给予战术奖励
+                    if abs(n_n) > 1.5 or abs(mu) > 0:
+                        reward_E_jinking = 1.0 * dt
+                        
+                # 单帧结算
+                total_rewards["evader_0"] += (reward_E_escape + reward_E_survival + reward_E_jinking)
+
             # --- 碰撞与终止条件检测 (在每一小帧都要检测) ---
             new_attacker_state = self.pyb_env._getDroneStateVector(attacker_id)
             new_evader_state = self.pyb_env._getDroneStateVector(evader_id)
@@ -275,10 +328,6 @@ class Drone1v1MARLEnv(ParallelEnv):
                 if state[2] < 0.1 or state[2] > 12.0:
                     total_rewards[agent] -= 100.0
                     terminations[agent] = True
-
-            # (此处可插入细粒度奖励：ATA角惩罚、距离拉近奖励等)
-            # attacker_reward += (prev_dist - new_dist) * 20
-            # evader_reward   += (new_dist - prev_dist) * 10
 
         # --- 退出 Frame Skip 循环，结算当前决策步的最终结果 ---
         
