@@ -2,6 +2,7 @@ import os
 import time
 import numpy as np
 import pybullet as p
+from pettingzoo import ParallelEnv
 import gymnasium as gym
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
@@ -17,27 +18,21 @@ from gym_pybullet_drones.utils.Logger import Logger
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 
-class DronePIDEnv(CtrlAviary):
-    def __init__(self, gui=False):
-        self.target_pos = np.array([1.0, 1.0, 1.0])
-        self.target_obj_id = -1
+class Drone1v1MARLEnv(ParallelEnv):
+    metadata = {"render_modes": ["human"], "name": "drone_1v1_v0"}
 
-        # === 新增：动态目标属性 ===
-        self.target_anchor = np.zeros(3) # 记录红球出生点 (用于限制活动范围)
-        self.target_v = np.zeros(3)      # 红球的三维移动速度
-        # === 新增：机动模式与圆周运动参数 ===
-        self.target_mode = 0        # 0:X轴, 1:Y轴, 2:Z轴, 3:圆周
-        self.target_angle = 0.0     # 圆周运动的当前极角
-        self.target_omega = 0.0     # 圆周运动的角速度 (rad/s)
-        self.target_radius = 1.5    # 圆周运动的半径
+    def __init__(self, gui=False):
+        # 定义智能体代号
+        self.possible_agents = ["attacker_0", "evader_0"]
+        self.agents = self.possible_agents[:]
 
         self.prev_dist = 0.0
         self.camera_mode = 4  # 默认相机视角
 
         super().__init__(
             drone_model=DroneModel.CF2X,
-            num_drones=1,
-            initial_xyzs=np.array([[-5.0, -5.0, 2.0]]),
+            num_drones=2,
+            initial_xyzs=np.array([[-5.0, -5.0, 2.0], [5.0, 5.0, 2.0]]),  #确定初始位置，后续可随机化处理
             physics=Physics.PYB,
             pyb_freq=240,
             ctrl_freq=60,
@@ -45,24 +40,30 @@ class DronePIDEnv(CtrlAviary):
         )
 
         if self.GUI:
-            # 隐藏 PyBullet 默认的左右侧边栏和参数面板，打造纯净画幅
+            # 隐藏 PyBullet 默认的左右侧边栏和参数面板
             p.configureDebugVisualizer(p.COV_ENABLE_GUI, 0)
-            # 开启高质量阴影（让飞机和红球在雷达网上有投影，极大提升 3D 空间感）
+            # 开启高质量阴影
             p.configureDebugVisualizer(p.COV_ENABLE_SHADOWS, 1)
 
         self.EPISODE_LEN_SEC = 25 #回合时长
         self.pid = DSLPIDControl(drone_model=DroneModel.CF2X)
 
-        self.SMOOTH_FACTOR = 0.1
+        self.SMOOTH_FACTOR = 0.1  #轨迹平滑系数
         self.user_input_pos = np.zeros(3)      
         self.current_target_pos = np.zeros(3)  
         
         # 加入 Yaw 控制变量 
         self.target_yaw = 0.0 
 
-        self.observation_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(19,), dtype=np.float32)
-
-        self.action_space = gym.spaces.Discrete(11)
+        # 动作和观测空间也要变成字典映射
+        self.observation_spaces = {
+            agent: gym.spaces.Box(low=-1.0, high=1.0, shape=(19,), dtype=np.float32) 
+            for agent in self.possible_agents
+        }
+        self.action_spaces = {
+            agent: gym.spaces.Discrete(11)
+            for agent in self.possible_agents
+        }
 
         # 建立 NASA BFM 到物理控制量的映射: {动作编号 : (切向过载 n_x, 法向过载 n_n, 滚转角 mu)}
         self.bfm_action_mapping = {
@@ -98,86 +99,16 @@ class DronePIDEnv(CtrlAviary):
         self.is_manual_mode = False 
         
     def reset(self, seed=None, options=None):
+        self.agents = self.possible_agents[:]
+        raw_obs, _ = self.pyb_env.reset()
+
+        # TODO: 需要在这里分别计算 attacker 和 evader 第一人称视角的 obs
+        obs_dict = {
+            "attacker_0": self._compute_attacker_obs(raw_obs),
+            "evader_0": self._compute_evader_obs(raw_obs)
+        }
+
         obs_raw, info = super().reset(seed=seed, options=options)
-
-        # 随机生成运动的“中心锚点” (防止红球钻地，Z轴基础高度调高点)
-        self.target_anchor = np.array([
-            np.random.uniform(0.0, 5.0),
-            np.random.uniform(0.0, 5.0),
-            np.random.uniform(2.0, 4.0)
-        ])
-        
-        # 随机抽取本局的运动模式 (0:X直线, 1:Y直线, 2:Z上下, 3:水平圆周)
-        self.target_mode = np.random.choice([0,1,2,3,4,5])  
-        self.target_v = np.zeros(3)
-
-        #初始化各模式的起始状态
-        if self.target_mode in [0, 1]:
-            # X 轴或 Y 轴水平往复
-            self.target_v[self.target_mode] = np.random.choice([-0.8, 0.8])
-            self.target_pos = self.target_anchor.copy()
-            
-        elif self.target_mode == 2:
-            # Z 轴垂直往复 (为了不砸地，速度设稍微慢一点 0.6)
-            self.target_v[2] = np.random.choice([-0.6, 0.6])
-            self.target_pos = self.target_anchor.copy()
-            
-        elif self.target_mode == 3:
-            # 水平面圆周运动
-            self.target_angle = np.random.uniform(0, 2 * np.pi) # 随机起始角度
-            self.target_omega = np.random.choice([-0.6, 0.6])   # 随机顺时针或逆时针
-            self.target_radius = np.random.uniform(1.0, 2.0)    # 随机转圈半径
-            
-            # 极坐标转直角坐标
-            self.target_pos = np.array([
-                self.target_anchor[0] + self.target_radius * np.cos(self.target_angle),
-                self.target_anchor[1] + self.target_radius * np.sin(self.target_angle),
-                self.target_anchor[2]
-            ])
-            # 切线瞬时速度公式: vx = -R * w * sin(a), vy = R * w * cos(a)
-            self.target_v[0] = -self.target_radius * self.target_omega * np.sin(self.target_angle)
-            self.target_v[1] =  self.target_radius * self.target_omega * np.cos(self.target_angle)
-            self.target_v[2] = 0.0
-
-        # ==========================================
-        # 【新增】：模式 4 - 水平 8 字形 (蛇形机动) 起始状态
-        # ==========================================
-        elif self.target_mode == 4:
-            self.target_angle = np.random.uniform(0, 2 * np.pi) 
-            self.target_omega = np.random.choice([-0.5, 0.5])   # 角速度稍微调慢一点，蛇形太快很难追
-            self.target_radius = np.random.uniform(1.5, 2.5)    # 8字形需要大一点的盘旋半径
-            
-            self.target_pos = np.array([
-                self.target_anchor[0] + self.target_radius * np.cos(self.target_angle),
-                self.target_anchor[1] + self.target_radius * np.sin(2.0 * self.target_angle) * 0.8,
-                self.target_anchor[2]
-            ])
-            # 切线初速度导数
-            self.target_v[0] = -self.target_radius * self.target_omega * np.sin(self.target_angle)
-            self.target_v[1] =  self.target_radius * self.target_omega * 1.6 * np.cos(2.0 * self.target_angle)
-            self.target_v[2] = 0.0
-
-        # ==========================================
-        # 【新增】：模式 5 - 3D 螺旋逃逸 起始状态
-        # ==========================================
-        elif self.target_mode == 5:
-            self.target_angle = np.random.uniform(0, 2 * np.pi)
-            self.target_omega = np.random.choice([-0.5, 0.5])
-            self.target_radius = np.random.uniform(1.0, 2.0)
-            
-            # 安全防沉迷保护：如果随机到的锚点太低，加上正弦振幅后开局可能钻地。所以把锚点至少拔高到 1.5m。
-            z_safe_anchor = max(1.5, self.target_anchor[2])
-            
-            self.target_pos = np.array([
-                self.target_anchor[0] + self.target_radius * np.cos(self.target_angle),
-                self.target_anchor[1] + self.target_radius * np.sin(self.target_angle),
-                z_safe_anchor + np.sin(self.target_angle * 1.5) * 0.5  # 加入 Z 轴的初相位起伏
-            ])
-            
-            # 三维切线初速度
-            self.target_v[0] = -self.target_radius * self.target_omega * np.sin(self.target_angle)
-            self.target_v[1] =  self.target_radius * self.target_omega * np.cos(self.target_angle)
-            self.target_v[2] =  self.target_omega * 1.5 * np.cos(self.target_angle * 1.5) * 0.5
 
         state = self._getDroneStateVector(0)
         self.prev_dist = np.linalg.norm(self.target_pos - state[0:3])
@@ -251,7 +182,7 @@ class DronePIDEnv(CtrlAviary):
         self.last_target_draw_pos = self.target_pos.copy()
         self.cam_pos = state[0:3].copy()   
 
-        return self._computeObs(), info
+        return obs_dict, {agent: {} for agent in self.agents}
 
     def _computeObs(self):
         state = self._getDroneStateVector(0)
@@ -328,6 +259,15 @@ class DronePIDEnv(CtrlAviary):
         return obs_array
     
     def step(self, action):
+        # 1. 把字典里的离散动作，翻译成两架飞机底层 PID 需要的姿态/速度指令
+        
+        # 2. 驱动 pybullet 物理引擎往前走一步 (包含 repeat 补帧逻辑)
+        
+        # 3. 计算两者各自的观测、奖励、死亡状态
+        # rewards = {"attacker_0": R_a, "evader_0": R_e}
+        
+        # 4. 清理死亡的智能体 (PettingZoo 规范)
+
         state = self._getDroneStateVector(0)
         dt = 1 / self.CTRL_FREQ
 
@@ -711,6 +651,7 @@ class DronePIDEnv(CtrlAviary):
             info["is_success"] = bool(reward_terminal >= 50.0)
         
         return final_obs, total_reward, terminated, truncated, info
+        # return obs_dict, rewards_dict, terminations_dict, truncations_dict, infos_dict
 
 def plot_mission_trajectory(drone_pos, target_pos, timestamps, episode_id=0):
     """绘制无人机 vs 红球的 3D 轨迹 + 距离曲线"""
