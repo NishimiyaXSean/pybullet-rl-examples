@@ -194,6 +194,9 @@ class Drone1v1MARLEnv(MultiAgentEnv):
             norm_local_enemy_vel   # 3维: 敌机速度矢量
         ]).astype(np.float32)
 
+        # 裁剪在 [-1.0, 1.0] 范围内
+        obs_array = np.clip(obs_array, -1.0, 1.0)
+
         return obs_array
 
     def step(self, actions):
@@ -345,17 +348,18 @@ class Drone1v1MARLEnv(MultiAgentEnv):
 
             # 1. 动能撞击 / 击杀成功
             if new_dist < 0.15:
-                if "attacker_0" in actions: total_rewards["attacker_0"] += 300.0
-                if "evader_0" in actions: total_rewards["evader_0"] -= 300.0
+                if "attacker_0" in total_rewards: total_rewards["attacker_0"] += 300.0
+                if "evader_0" in total_rewards: total_rewards["evader_0"] -= 300.0
                 terminations["attacker_0"] = True
                 terminations["evader_0"] = True
                 break # 直接结束本轮 AI 决策的 repeat 循环
 
             # 2. 地板/天空边界惩罚
             for agent, state in zip(["attacker_0", "evader_0"], [new_attacker_state, new_evader_state]):
-                if state[2] < 0.1 or state[2] > 12.0:
-                    total_rewards[agent] -= 100.0
-                    terminations[agent] = True
+                if agent in total_rewards: # 只有这个 agent 还在计分板上，才对它进行边界惩罚！
+                    if state[2] < 0.1 or state[2] > 12.0:
+                        total_rewards[agent] -= 100.0
+                        terminations[agent] = True
 
         # --- 退出 Frame Skip 循环，结算当前决策步的最终结果 ---
         
@@ -380,7 +384,8 @@ class Drone1v1MARLEnv(MultiAgentEnv):
         ]
 
         # --- 计算全局结束标志 ---
-        terminations["__all__"] = all(terminations.values()) if terminations else True
-        truncations["__all__"] = all(truncations.values()) if truncations else True
+        # 在 1v1 中，只要有任何一方死亡或超时，整局对抗立刻结束
+        terminations["__all__"] = any(terminations.values()) if terminations else True
+        truncations["__all__"] = any(truncations.values()) if truncations else True
 
         return observations, total_rewards, terminations, truncations, infos

@@ -6,6 +6,7 @@ import torch
 import numpy as np
 import gymnasium as gym
 import ray
+import datetime
 from ray import tune
 from ray.rllib.algorithms.ppo import PPOConfig
 from ray.tune.registry import register_env
@@ -67,31 +68,55 @@ if __name__ == "__main__":
     algo = config.build()
 
     # 7. 开始训练循环
-    TRAIN_ITERATIONS = 500
-    CHECKPOINT_DIR = "./marl_checkpoints"
+    TRAIN_ITERATIONS = 2000
+
+    # 获取当前时间
+    current_time = datetime.datetime.now().strftime("%m%d_%H%M")
+    CHECKPOINT_DIR = f"./marl_checkpoints/run_{current_time}"
     os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 
     print("==================================")
     print("开始多智能体 1v1 空战对抗训练！")
+    print("提示：在终端按下 【Ctrl + C】 可随时安全终止训练并保存模型！")
     print("==================================")
 
-    for i in range(TRAIN_ITERATIONS):
-        # step() 会让所有 worker 跑环境，收集数据，更新神经网络，然后返回统计信息
-        result = algo.train()
-        
-        # 打印双方的平均奖励，观察博弈胜负手
-        reward_A = result['policy_reward_mean'].get('policy_attacker', 0.0)
-        reward_E = result['policy_reward_mean'].get('policy_evader', 0.0)
-        
-        print(f"迭代 {i+1:03d} | "
-              f"主机奖励: {reward_A:6.1f} | "
-              f"目标机奖励: {reward_E:6.1f} | "
-              f"总回合数: {result['episodes_total']}")
+    try: 
+        for i in range(TRAIN_ITERATIONS):
+            # step() 会让所有 worker 跑环境，收集数据，更新神经网络，然后返回统计信息
+            result = algo.train()
 
-        # 每 50 次迭代保存一次模型
-        if (i + 1) % 50 == 0:
-            checkpoint_path = algo.save(CHECKPOINT_DIR)
-            print(f"--> 模型已保存至: {checkpoint_path}")
+            # 尝试从 env_runners 中获取数据，如果没有则退回使用 result 本身
+            stats = result.get("env_runners", result)
+            policy_rewards = stats.get("policy_reward_mean", {})
+            
+            # 打印双方的平均奖励，观察博弈胜负手
+            reward_A = policy_rewards.get("policy_attacker", 0.0)
+            reward_E = policy_rewards.get("policy_evader", 0.0)
 
-    # 训练结束
-    ray.shutdown()
+            # 提取总训练步数和本轮完成的回合数
+            total_steps = result.get("num_env_steps_trained", 0)
+            episodes_this_iter = stats.get("num_episodes", 0)
+            
+            print(f"迭代 {i+1:03d} | "
+                f"主机奖励: {reward_A:8.1f} | "
+                f"目标机奖励: {reward_E:8.1f} | "
+                f"本轮完成: {episodes_this_iter:3d} 局 | "
+                f"总训练步数: {total_steps}")
+
+            # 每 50 次迭代保存一次模型
+            if (i + 1) % 50 == 0:
+                checkpoint_path = algo.save(CHECKPOINT_DIR)
+                print(f"--> 模型已保存至: {checkpoint_path}")
+
+    except KeyboardInterrupt:
+        # 当你按下 Ctrl+C 时，会跳到这里执行
+        print("\n==================================")
+        print("收到中止信号 (Ctrl+C)！正在执行安全退出并提取大脑记忆...")
+        checkpoint_path = algo.save(CHECKPOINT_DIR)
+        print(f"--> [最终保存] 模型已安全暂存至: {checkpoint_path}")
+        print("==================================")
+
+    finally:
+        # 无论正常跑完还是被中断，都确保关闭 Ray 引擎，释放内存
+        ray.shutdown()
+        print("训练脚本已安全关闭。")
