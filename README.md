@@ -19,7 +19,7 @@ pip install -e .
 
 ## Test Models
 
-Download the model zip and pkl file released in the release and place them in the examples/ directory. With trained models, you can easily run tests in several missions.
+Download the model zip and .pkl file released in the release and place them in the examples/ directory. With trained models, you can easily run tests in certain missions.
 
 ```sh
 cd gym-pybullet-drones/examples
@@ -34,7 +34,7 @@ python mission_v3.py
 
 ### Basics
 
-If you want to know the basic function and usage of gym-pybullet, check the examples/basic folder, which contains minimun workbase and several simple demos by the author.
+If you want to train your own model, please check the examples/basic folder, which contains minimun workbase and several simple demos by the author so you can learn the basic function and usage of gym-pybullet.
 
 ```sh
 cd gym-pybullet-drones/examples/basic
