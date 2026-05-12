@@ -46,7 +46,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
         
         self.CTRL_FREQ = 60
         self.is_manual_mode = False
-        self.EPISODE_LEN_SEC = 25 # 回合最大时长
+        self.EPISODE_LEN_SEC = 100 # 回合最大时长
         self.SMOOTH_FACTOR = 0.1  # PID 轨迹平滑系数
         self.cpa_radius = 1.0     # 近炸引信触发半径
 
@@ -86,19 +86,36 @@ class Drone1v1MARLEnv(MultiAgentEnv):
         self.last_target_draw_pos = np.zeros(3)
         self.cam_pos = np.zeros(3)
 
-    # PettingZoo 强制要求提供 action_space 和 observation_space 的读取接口
-    def observation_space(self, agent):
-        return self.observation_spaces[agent]
-
-    def action_space(self, agent):
-        return self.action_spaces[agent]
-
     def reset(self, seed=None, options=None):
         """
         环境重置，必须返回两个字典：obs_dict, info_dict
         """
         # 重置存活列表
         self.agents = self.possible_agents[:]
+
+        # 动态生成对角线象限的随机出生点
+        # 1. 随机决定主机的象限符号 (1 或 -1)
+        sign_x = np.random.choice([-1, 1])
+        sign_y = np.random.choice([-1, 1])
+
+        # 2. 在该象限内，随机生成 3.0 到 8.0 米的安全边界距离
+        attacker_x = sign_x * np.random.uniform(3.0, 8.0)
+        attacker_y = sign_y * np.random.uniform(3.0, 8.0)
+        attacker_z = np.random.uniform(1.5, 4.0) # 高度也适当随机
+
+        # 3. 目标机强制取相反符号，确保永远出生在对角象限！
+        evader_x = -sign_x * np.random.uniform(3.0, 8.0)
+        evader_y = -sign_y * np.random.uniform(3.0, 8.0)
+        evader_z = np.random.uniform(2.0, 5.0)
+
+        # 组合成新的初始坐标数组
+        new_init_xyzs = np.array([
+            [attacker_x, attacker_y, attacker_z],
+            [evader_x, evader_y, evader_z]
+        ])
+
+        # 覆盖 gym-pybullet-drones 底层环境缓存的初始坐标
+        self.pyb_env.INIT_XYZS = new_init_xyzs
         
         # 重置底层物理引擎
         raw_obs, _ = self.pyb_env.reset()
