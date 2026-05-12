@@ -6,13 +6,15 @@ os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
 import time
 import numpy as np
 import pybullet as p
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
 import ray
 from ray.rllib.algorithms.algorithm import Algorithm
 from ray.tune.registry import register_env
 
 from marl_env import Drone1v1MARLEnv
 
-RELATIVE_PATH = "./marl_checkpoints/run_0512_1429" 
+RELATIVE_PATH = "./marl_checkpoints/run_0512_1715/checkpoint_final" 
 CHECKPOINT_PATH = os.path.abspath(RELATIVE_PATH)
 
 def env_creator(config):
@@ -91,5 +93,43 @@ if __name__ == "__main__":
             print(">>> 战况结算：发生了有效的拦截或碰撞！")
         else:
             print(">>> 战况结算：演习超时，目标逃逸。")
+
+        # 演习结束，生成战报分析图表
+        arr_pos_A = np.array(history_pos_A)
+        arr_pos_E = np.array(history_pos_E)
+        
+        fig = plt.figure(figsize=(16, 6))
+        plt.suptitle(f"Episode {episode+1} Combat Analysis", fontsize=16, fontweight='bold')
+
+        # 图表 1：相对距离曲线
+        ax1 = fig.add_subplot(1, 2, 1)
+        ax1.plot(history_dist, label='Relative Distance', color='blue', linewidth=2)
+        ax1.axhline(y=1.0, color='orange', linestyle='--', label='Fuze Trigger Radius (1.0m)')
+        ax1.axhline(y=0.15, color='red', linestyle='--', label='Kinetic Hit (0.15m)')
+        ax1.set_title("Interception Distance over Time")
+        ax1.set_xlabel("Time Steps (0.2s / step)")
+        ax1.set_ylabel("Distance (m)")
+        ax1.grid(True, alpha=0.5)
+        ax1.legend()
+
+        # 图表 2：3D 狗斗轨迹
+        ax2 = fig.add_subplot(1, 2, 2, projection='3d')
+        ax2.plot(arr_pos_A[:, 0], arr_pos_A[:, 1], arr_pos_A[:, 2], label='Attacker (CF2X)', color='red', linewidth=2)
+        ax2.plot(arr_pos_E[:, 0], arr_pos_E[:, 1], arr_pos_E[:, 2], label='Evader (Target)', color='orange', linewidth=2)
+        
+        # 标记起点和终点
+        ax2.scatter(arr_pos_A[0, 0], arr_pos_A[0, 1], arr_pos_A[0, 2], color='darkred', marker='o', s=50, label='Start A')
+        ax2.scatter(arr_pos_E[0, 0], arr_pos_E[0, 1], arr_pos_E[0, 2], color='goldenrod', marker='o', s=50, label='Start E')
+        ax2.scatter(arr_pos_A[-1, 0], arr_pos_A[-1, 1], arr_pos_A[-1, 2], color='black', marker='x', s=100, label='End Point')
+
+        ax2.set_title("3D Dogfight Trajectory")
+        ax2.set_xlabel("X (m)")
+        ax2.set_ylabel("Y (m)")
+        ax2.set_zlabel("Z (m)")
+        ax2.legend()
+
+        plt.tight_layout()
+        # 阻塞式显示：看完这张图并关闭窗口后，才会开始下一局演习
+        plt.show()
 
     ray.shutdown()
