@@ -48,6 +48,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
         self.is_manual_mode = False
         self.EPISODE_LEN_SEC = 25 # 回合最大时长
         self.SMOOTH_FACTOR = 0.1  # PID 轨迹平滑系数
+        self.cpa_radius = 1.0     # 近炸引信触发半径
 
         # BFM 动作库: {动作编号 : (切向过载 n_x, 法向过载 n_n, 滚转角 mu)}
         self.bfm_action_mapping = {
@@ -76,6 +77,14 @@ class Drone1v1MARLEnv(MultiAgentEnv):
             agent: gym.spaces.Box(low=-1.0, high=1.0, shape=(19,), dtype=np.float32)
             for agent in self.possible_agents
         }
+
+        # 视觉与运镜初始化
+        self.camera_mode = 1  # 默认相机视角 (1:智能追尾)
+        self.hud_text_id = -1
+        self.fuze_obj_id = -1
+        self.last_draw_pos = np.zeros(3)
+        self.last_target_draw_pos = np.zeros(3)
+        self.cam_pos = np.zeros(3)
 
     # PettingZoo 强制要求提供 action_space 和 observation_space 的读取接口
     def observation_space(self, agent):
@@ -118,6 +127,31 @@ class Drone1v1MARLEnv(MultiAgentEnv):
         
         info_dict = {agent: {} for agent in self.agents}
         
+        # 3D 视觉场景构建 (仅在开启 GUI 时生效)
+        self.last_draw_pos = attacker_pos.copy()
+        self.last_target_draw_pos = evader_pos.copy()
+        self.cam_pos = attacker_pos.copy()
+
+        if self.pyb_env.GUI:
+            p.removeAllUserDebugItems(physicsClientId=self.pyb_env.CLIENT) # 清理上一局的残留线条
+            
+            # 为目标机生成一个半透明的近炸引信杀伤圈
+            fuze_v_id = p.createVisualShape(p.GEOM_SPHERE, radius=self.cpa_radius, rgbaColor=[1, 0.5, 0, 0.25])
+            self.fuze_obj_id = p.createMultiBody(baseMass=0, baseVisualShapeIndex=fuze_v_id, basePosition=evader_pos, physicsClientId=self.pyb_env.CLIENT)
+
+            z_offset = 0.05
+            # 绘制主坐标轴
+            p.addUserDebugLine([-15, 0, z_offset],[15, 0, z_offset], [1, 0, 0], 4, 0, physicsClientId=self.pyb_env.CLIENT)
+            p.addUserDebugLine([0, -15, z_offset], [0, 15, z_offset],[0, 1, 0], 4, 0, physicsClientId=self.pyb_env.CLIENT)
+            p.addUserDebugLine([0, 0, z_offset],[0, 0, 15], [0, 0.5, 1], 4, 0, physicsClientId=self.pyb_env.CLIENT)
+            
+            # 绘制底层地平面雷达网格 (Z=0)，范围 -15 到 15
+            for i in range(-14, 15, 2):
+                if i != 0: 
+                    grid_color = [0.1, 0.2, 0.3]      
+                    p.addUserDebugLine([i, -15, 0.0], [i, 15, 0.0], grid_color, 1.0, 0, physicsClientId=self.pyb_env.CLIENT)
+                    p.addUserDebugLine([-15, i, 0.0], [15, i, 0.0], grid_color, 1.0, 0, physicsClientId=self.pyb_env.CLIENT)
+
         return obs_dict, info_dict
     
     def _compute_obs(self, agent):
@@ -288,6 +322,64 @@ class Drone1v1MARLEnv(MultiAgentEnv):
             self.pyb_env.step(rpms)
             self.step_counter += 1
 
+            # 1:1 真实物理平滑渲染与电影级运镜
+            if self.pyb_env.GUI:
+                import time
+                time.sleep(1 / self.CTRL_FREQ)  # 强制同步现实时间
+                
+                # 实时更新新坐标
+                cur_attacker_pos = self.pyb_env._getDroneStateVector(attacker_id)[0:3]
+                cur_evader_pos = self.pyb_env._getDroneStateVector(evader_id)[0:3]
+                
+                # 更新目标机身上的“幽灵引信球”位置
+                if self.fuze_obj_id != -1:
+                    p.resetBasePositionAndOrientation(self.fuze_obj_id, cur_evader_pos, [0, 0, 0, 1], physicsClientId=self.pyb_env.CLIENT)
+
+                # 键盘运镜切换监听
+                keys = p.getKeyboardEvents(physicsClientId=self.pyb_env.CLIENT)
+                if ord('1') in keys and keys[ord('1')] & p.KEY_WAS_TRIGGERED: self.camera_mode = 1
+                if ord('2') in keys and keys[ord('2')] & p.KEY_WAS_TRIGGERED: self.camera_mode = 2
+                if ord('3') in keys and keys[ord('3')] & p.KEY_WAS_TRIGGERED: self.camera_mode = 3
+                if ord('4') in keys and keys[ord('4')] & p.KEY_WAS_TRIGGERED: self.camera_mode = 4
+                if ord('5') in keys and keys[ord('5')] & p.KEY_WAS_TRIGGERED: self.camera_mode = 5
+
+                # 平滑画出红色(主机)与黄色(目标机)的 3D 轨迹尾迹
+                p.addUserDebugLine(self.last_draw_pos, cur_attacker_pos, [1, 0, 0], 2.5, 3.0, physicsClientId=self.pyb_env.CLIENT)
+                p.addUserDebugLine(self.last_target_draw_pos, cur_evader_pos, [1, 1, 0], 2.5, 3.0, physicsClientId=self.pyb_env.CLIENT)
+                self.last_draw_pos = cur_attacker_pos.copy()
+                self.last_target_draw_pos = cur_evader_pos.copy()
+
+                # HUD 文字与几何计算
+                dist_cam = np.linalg.norm(cur_attacker_pos - cur_evader_pos)
+                dx = cur_attacker_pos[0] - cur_evader_pos[0]
+                dy = cur_attacker_pos[1] - cur_evader_pos[1]
+                drone_angle = np.degrees(np.arctan2(dy, dx))
+                
+                vel_norm = np.linalg.norm(self.pyb_env._getDroneStateVector(attacker_id)[10:13])
+                hud_text = f"Dist:{dist_cam:.1f}m | ATA:{drone_angle:.0f}deg | Vel:{vel_norm:.1f}m/s"
+                
+                # 获取主机 ID，用于绑定 HUD 文本跟随
+                drone_pyb_id = self.pyb_env.DRONE_IDS[0] if hasattr(self.pyb_env, 'DRONE_IDS') else self.pyb_env.drone_ids[0]
+                if self.hud_text_id == -1:
+                    self.hud_text_id = p.addUserDebugText(hud_text, [0, 0, 0.8], textColorRGB=[0, 0, 0], textSize=1.5, parentObjectUniqueId=drone_pyb_id, physicsClientId=self.pyb_env.CLIENT)
+                else:
+                    self.hud_text_id = p.addUserDebugText(hud_text, [0, 0, 0.8], textColorRGB=[0, 0, 0], textSize=1.5, parentObjectUniqueId=drone_pyb_id, replaceItemUniqueId=self.hud_text_id, physicsClientId=self.pyb_env.CLIENT)
+
+                # 相机跟随逻辑
+                self.cam_pos = self.cam_pos * 0.95 + cur_attacker_pos * 0.05
+                smooth_yaw = np.degrees(self.target_yaws["attacker_0"])
+
+                if self.camera_mode == 1:
+                    p.resetDebugVisualizerCamera(2.0, smooth_yaw - 90, -20, self.cam_pos, physicsClientId=self.pyb_env.CLIENT)
+                elif self.camera_mode == 2:
+                    p.resetDebugVisualizerCamera(12.0, 0, -89.9, [0, 0, 1.0], physicsClientId=self.pyb_env.CLIENT)
+                elif self.camera_mode == 3:
+                    p.resetDebugVisualizerCamera(max(2.0, dist_cam * 0.8), drone_angle - 45, -20, cur_evader_pos, physicsClientId=self.pyb_env.CLIENT)
+                elif self.camera_mode == 4:
+                    p.resetDebugVisualizerCamera(6.0, 45, -30, cur_evader_pos, physicsClientId=self.pyb_env.CLIENT)
+                elif self.camera_mode == 5:
+                    p.resetDebugVisualizerCamera(15.0, 90, -5, [0, 0, 3.0], physicsClientId=self.pyb_env.CLIENT)
+
             # 计算两架飞机的当前距离和相对位置
             rel_pos_world = evader_pos - attacker_pos
             dist = np.linalg.norm(rel_pos_world)
@@ -346,8 +438,6 @@ class Drone1v1MARLEnv(MultiAgentEnv):
             new_evader_state = self.pyb_env._getDroneStateVector(evader_id)
             new_dist = np.linalg.norm(new_attacker_state[0:3] - new_evader_state[0:3])
 
-            cpa_radius = 1.0 # 近炸引信触发半径
-
             # 1. 动能撞击 / 击杀成功
             if new_dist < 0.15:
                 if "attacker_0" in total_rewards: total_rewards["attacker_0"] += 300.0
@@ -363,12 +453,12 @@ class Drone1v1MARLEnv(MultiAgentEnv):
             # 2. 擦肩而过，触发近炸引信
             # new_dist 是物理步进后的距离，dist 是步进前的距离。
             # 如果进入杀伤圈，且距离开始拉大 (new_dist - dist > 0)，说明刚刚掠过极小值点
-            elif new_dist < cpa_radius and (new_dist - dist) > 0:
+            elif new_dist < self.cpa_radius and (new_dist - dist) > 0:
                 # 此时步进前的距离 dist 就是本次交锋的最小脱靶量
                 miss_distance = dist 
                 
                 # 根据脱靶量计算梯度得分：基础分50 + 250 * (1 - (脱靶量 - 0.15) / 杀伤区间)
-                score_ratio = 1.0 - ((miss_distance - 0.15) / (cpa_radius - 0.15))
+                score_ratio = 1.0 - ((miss_distance - 0.15) / (self.cpa_radius - 0.15))
                 reward_terminal = 50.0 + 250.0 * score_ratio
                 
                 # 双方进行分数结算 (零和博弈)
