@@ -1,20 +1,20 @@
 import os
+# 解决 Windows 下 NumPy 和 PyTorch 的 OpenMP 冲突
+os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
+
+import torch
+import numpy as np
+import gymnasium as gym
 import ray
 from ray import tune
 from ray.rllib.algorithms.ppo import PPOConfig
 from ray.tune.registry import register_env
-from ray.rllib.env.wrappers.pettingzoo_env import PettingZooEnv
 
 # 环境代码保存在 marl_env.py 中，类名叫 Drone1v1MARLEnv
 from marl_env import Drone1v1MARLEnv
 
 def env_creator(config):
-    """
-    环境包装器：RLlib 不认识原生的 PettingZoo，
-    必须用 RLlib 自带的 PettingZooEnv 套一层壳。
-    """
-    env = Drone1v1MARLEnv(gui=False) 
-    return PettingZooEnv(env)
+    return Drone1v1MARLEnv(gui=False)
 
 if __name__ == "__main__":
     # 1. 初始化 Ray 引擎
@@ -24,18 +24,22 @@ if __name__ == "__main__":
     env_name = "drone_1v1_env"
     register_env(env_name, env_creator)
 
-    # 为了配置策略，我们需要先实例化一个临时环境，提取观测和动作维度
-    temp_env = env_creator({})
-    obs_space = temp_env.observation_space
-    act_space = temp_env.action_space
+    obs_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(19,), dtype=np.float32)
+    act_space = gym.spaces.Discrete(11)
 
     # 3. 核心算法配置 (PPOConfig)
     config = (
         PPOConfig()
         .environment(env=env_name)
         .framework("torch") # 必须指定使用 PyTorch
-        .resources(num_gpus=1 if ray.tune.utils.util.is_gpu_available() else 0)
-        .rollouts(num_rollout_workers=4) # 开启并行的 CPU 核心来跑环境收集数据
+        .resources(num_gpus=1 if torch.cuda.is_available() else 0)
+        .env_runners(num_env_runners=4) # 开启并行的 CPU 核心来跑环境收集数据
+        
+        # 强制关闭尚不成熟的新 API 栈
+        .api_stack(
+            enable_rl_module_and_learner=False,
+            enable_env_runner_and_connector_v2=False
+        )
         
         # 4. 多智能体策略分配 (Multi-Agent Setup)
         .multi_agent(
@@ -53,7 +57,7 @@ if __name__ == "__main__":
         .training(
             model={"fcnet_hiddens": [256, 256, 128], "fcnet_activation": "relu"},
             train_batch_size=4000,
-            sgd_minibatch_size=256,
+            minibatch_size=256,
             lr=1e-4,
         )
     )

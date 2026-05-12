@@ -1,13 +1,13 @@
 import numpy as np
 import gymnasium as gym
-from pettingzoo import ParallelEnv
 import pybullet as p
+from ray.rllib.env.multi_agent_env import MultiAgentEnv
 
 from gym_pybullet_drones.envs.CtrlAviary import CtrlAviary
 from gym_pybullet_drones.utils.enums import DroneModel, Physics
 from gym_pybullet_drones.control.DSLPIDControl import DSLPIDControl
 
-class Drone1v1MARLEnv(ParallelEnv):
+class Drone1v1MARLEnv(MultiAgentEnv):
     metadata = {"render_modes": ["human"], "name": "drone_1v1_v0"}
 
     def __init__(self, gui=False):
@@ -378,5 +378,9 @@ class Drone1v1MARLEnv(ParallelEnv):
             a for a in self.agents
             if not (terminations[a] or truncations[a])
         ]
+
+        # --- 计算全局结束标志 ---
+        terminations["__all__"] = all(terminations.values()) if terminations else True
+        truncations["__all__"] = all(truncations.values()) if truncations else True
 
         return observations, total_rewards, terminations, truncations, infos
