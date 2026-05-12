@@ -74,6 +74,15 @@ if __name__ == "__main__":
     current_time = datetime.datetime.now().strftime("%m%d_%H%M")
     CHECKPOINT_DIR = f"./marl_checkpoints/run_{current_time}"
     os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+    
+    # 加载旧模型以接续训练
+    OLD_CHECKPOINT = os.path.abspath("./marl_checkpoints/run_0512_1429" )
+
+    if os.path.exists(OLD_CHECKPOINT):
+        print(f"正在恢复旧模型记忆: {OLD_CHECKPOINT}")
+        algo.restore(OLD_CHECKPOINT)
+    else:
+        print("未发现旧模型，将从随机初始化开始全新训练。")
 
     print("==================================")
     print("开始多智能体 1v1 空战对抗训练！")
@@ -105,14 +114,16 @@ if __name__ == "__main__":
 
             # 每 50 次迭代保存一次模型
             if (i + 1) % 50 == 0:
-                checkpoint_path = algo.save(CHECKPOINT_DIR)
+                current_save_path = os.path.join(CHECKPOINT_DIR,f"checkpoint_{i+1:06d}")
+                checkpoint_path = algo.save(current_save_path)
                 print(f"--> 模型已保存至: {checkpoint_path}")
 
     except KeyboardInterrupt:
         # 当你按下 Ctrl+C 时，会跳到这里执行
         print("\n==================================")
         print("收到中止信号 (Ctrl+C)！正在执行安全退出并提取大脑记忆...")
-        checkpoint_path = algo.save(CHECKPOINT_DIR)
+        final_save_path = os.path.join(CHECKPOINT_DIR, "checkpoint_final")
+        checkpoint_path = algo.save(final_save_path)
         print(f"--> [最终保存] 模型已安全暂存至: {checkpoint_path}")
         print("==================================")
 

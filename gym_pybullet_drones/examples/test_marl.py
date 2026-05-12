@@ -1,4 +1,8 @@
 import os
+import warnings
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
+
 import time
 import numpy as np
 import pybullet as p
@@ -8,11 +12,12 @@ from ray.tune.registry import register_env
 
 from marl_env import Drone1v1MARLEnv
 
-CHECKPOINT_PATH = "./marl_checkpoints/run_0512_1429" 
+RELATIVE_PATH = "./marl_checkpoints/run_0512_1429" 
+CHECKPOINT_PATH = os.path.abspath(RELATIVE_PATH)
 
 def env_creator(config):
-    # 测试时开启 GUI 界面
-    return Drone1v1MARLEnv(gui=True)
+    # 真正的 3D 渲染权，交给主线程里手动创建的 env
+    return Drone1v1MARLEnv(gui=False)
 
 if __name__ == "__main__":
     # 初始化 Ray
