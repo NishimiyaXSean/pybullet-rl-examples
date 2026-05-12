@@ -57,15 +57,17 @@ if __name__ == "__main__":
         # 5. 神经网络结构 (Net Arch)
         .training(
             model={"fcnet_hiddens": [256, 256, 128], "fcnet_activation": "relu"},
-            train_batch_size=2000,
+            train_batch_size=4096,
             minibatch_size=256,
             lr=1e-4,
+            entropy_coeff=0.001,
         )
     )
 
     # 6. 构建算法对象
     print("正在构建 RLlib 算法对象，请稍候...")
     algo = config.build()
+    print(f"TensorBoard 日志正在实时写入：{algo.logdir}")
 
     # 7. 开始训练循环
     TRAIN_ITERATIONS = 500
@@ -74,8 +76,9 @@ if __name__ == "__main__":
     current_time = datetime.datetime.now().strftime("%m%d_%H%M")
     CHECKPOINT_DIR = f"./marl_checkpoints/run_{current_time}"
     os.makedirs(CHECKPOINT_DIR, exist_ok=True)
-    
-    # 加载旧模型以接续训练
+
+    '''
+    # 加载旧模型以继续训练
     OLD_CHECKPOINT = os.path.abspath("./marl_checkpoints/run_0512_1429" )
 
     if os.path.exists(OLD_CHECKPOINT):
@@ -83,6 +86,7 @@ if __name__ == "__main__":
         algo.restore(OLD_CHECKPOINT)
     else:
         print("未发现旧模型，将从随机初始化开始全新训练。")
+    '''
 
     print("==================================")
     print("开始多智能体 1v1 空战对抗训练！")

@@ -50,6 +50,11 @@ if __name__ == "__main__":
         # 记录每局的得分
         ep_reward_A = 0
         ep_reward_E = 0
+
+        # --- 绘图数据收集器 ---
+        history_pos_A = []
+        history_pos_E = []
+        history_dist = []
         
         while not (terminated["__all__"] or truncated["__all__"]):
             # 双方大脑独立思考
@@ -79,6 +84,16 @@ if __name__ == "__main__":
             ep_reward_A += rewards.get("attacker_0", 0)
             ep_reward_E += rewards.get("evader_0", 0)
             
+            # --- 记录当前帧的绝对物理坐标 ---
+            # 通过 env.pyb_env 绕过观测空间，直接获取上帝视角的真实位置
+            pos_A = env.pyb_env._getDroneStateVector(0)[0:3]
+            pos_E = env.pyb_env._getDroneStateVector(1)[0:3]
+            dist = np.linalg.norm(pos_A - pos_E)
+            
+            history_pos_A.append(pos_A)
+            history_pos_E.append(pos_E)
+            history_dist.append(dist)
+
             # 保持 1:1 真实物理频率渲染
             time.sleep(0.02) 
 
