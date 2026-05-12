@@ -346,15 +346,44 @@ class Drone1v1MARLEnv(MultiAgentEnv):
             new_evader_state = self.pyb_env._getDroneStateVector(evader_id)
             new_dist = np.linalg.norm(new_attacker_state[0:3] - new_evader_state[0:3])
 
+            cpa_radius = 1.0 # 近炸引信触发半径
+
             # 1. 动能撞击 / 击杀成功
             if new_dist < 0.15:
                 if "attacker_0" in total_rewards: total_rewards["attacker_0"] += 300.0
                 if "evader_0" in total_rewards: total_rewards["evader_0"] -= 300.0
                 terminations["attacker_0"] = True
                 terminations["evader_0"] = True
+
+                # 记录终端坐标 (放入 info 字典，供未来测试脚本绘图使用)
+                infos["attacker_0"]["terminal_drone_pos"] = new_attacker_state[0:3].copy()
+                infos["attacker_0"]["terminal_target_pos"] = new_evader_state[0:3].copy()
                 break # 直接结束本轮 AI 决策的 repeat 循环
 
-            # 2. 地板/天空边界惩罚
+            # 2. 擦肩而过，触发近炸引信
+            # new_dist 是物理步进后的距离，dist 是步进前的距离。
+            # 如果进入杀伤圈，且距离开始拉大 (new_dist - dist > 0)，说明刚刚掠过极小值点
+            elif new_dist < cpa_radius and (new_dist - dist) > 0:
+                # 此时步进前的距离 dist 就是本次交锋的最小脱靶量
+                miss_distance = dist 
+                
+                # 根据脱靶量计算梯度得分：基础分50 + 250 * (1 - (脱靶量 - 0.15) / 杀伤区间)
+                score_ratio = 1.0 - ((miss_distance - 0.15) / (cpa_radius - 0.15))
+                reward_terminal = 50.0 + 250.0 * score_ratio
+                
+                # 双方进行分数结算 (零和博弈)
+                if "attacker_0" in total_rewards: total_rewards["attacker_0"] += reward_terminal
+                if "evader_0" in total_rewards: total_rewards["evader_0"] -= reward_terminal
+                
+                terminations["attacker_0"] = True
+                terminations["evader_0"] = True
+                
+                # 记录终端坐标
+                infos["attacker_0"]["terminal_drone_pos"] = new_attacker_state[0:3].copy()
+                infos["attacker_0"]["terminal_target_pos"] = new_evader_state[0:3].copy()
+                break
+
+            # 3. 地板/天空边界惩罚
             for agent, state in zip(["attacker_0", "evader_0"], [new_attacker_state, new_evader_state]):
                 if agent in total_rewards: # 只有这个 agent 还在计分板上，才对它进行边界惩罚！
                     if state[2] < 0.1 or state[2] > 12.0:

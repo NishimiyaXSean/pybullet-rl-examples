@@ -57,7 +57,7 @@ if __name__ == "__main__":
         # 5. 神经网络结构 (Net Arch)
         .training(
             model={"fcnet_hiddens": [256, 256, 128], "fcnet_activation": "relu"},
-            train_batch_size=4000,
+            train_batch_size=2000,
             minibatch_size=256,
             lr=1e-4,
         )
@@ -68,7 +68,7 @@ if __name__ == "__main__":
     algo = config.build()
 
     # 7. 开始训练循环
-    TRAIN_ITERATIONS = 2000
+    TRAIN_ITERATIONS = 500
 
     # 获取当前时间
     current_time = datetime.datetime.now().strftime("%m%d_%H%M")
