@@ -14,7 +14,7 @@ from ray.tune.registry import register_env
 
 from marl_env import Drone1v1MARLEnv
 
-RELATIVE_PATH = "./marl_checkpoints/run_0512_1715/checkpoint_final" 
+RELATIVE_PATH = "./marl_checkpoints/run_0513_1949/checkpoint_best_iter_007" 
 CHECKPOINT_PATH = os.path.abspath(RELATIVE_PATH)
 
 def env_creator(config):
@@ -29,12 +29,12 @@ if __name__ == "__main__":
     env_name = "drone_1v1_env"
     register_env(env_name, env_creator)
 
-    # 从 Checkpoint 加载模型
-    print(f"正在加载大脑记忆: {CHECKPOINT_PATH}")
-    algo = Algorithm.from_checkpoint(CHECKPOINT_PATH)
-    
     # 实例化一个本地环境用于可视化
     env = Drone1v1MARLEnv(gui=True)
+    obs, info = env.reset()
+
+    algo = Algorithm.from_checkpoint(CHECKPOINT_PATH)
+    print("模型加载完成！")
     
     print("==================================")
     print("1v1 多智能体对抗演习开始！")
