@@ -475,7 +475,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                         reward_E_straight = 0.5 * dt
                     else:
                         # 如果在安全距离做大过载机动，给予轻微惩罚
-                        reward_E_straight = -0.2 * dt
+                        reward_E_straight = -0.3 * dt
                         
                 # 单帧结算
                 total_rewards["evader_0"] += (reward_E_escape + reward_E_survival + reward_E_jinking + reward_E_straight)

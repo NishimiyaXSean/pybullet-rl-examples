@@ -12,6 +12,7 @@ import datetime
 from ray import tune
 from ray.rllib.algorithms.ppo import PPOConfig
 from ray.tune.registry import register_env
+from ray.rllib.algorithms.callbacks import DefaultCallbacks
 
 # 环境代码保存在 marl_env.py 中，类名叫 Drone1v1MARLEnv
 from marl_env import Drone1v1MARLEnv
@@ -89,10 +90,11 @@ if __name__ == "__main__":
     # 7. 开始训练循环
     TRAIN_ITERATIONS = 500
 
-    # ================= 新增：初始化最优记录 =================
-    best_reward_A = -float('inf')  # 初始设定为负无穷
-    best_checkpoint_path = None    # 记录上一代最优模型的路径
-    # =======================================================
+    # ================= 修改：初始化最优记录 (基于成功率) =================
+    # 初始化为 -0.01（负数），这样可以确保第一轮训练（即使成功率是 0%）也能作为保底模型保存下来
+    best_success_rate = -0.01  
+    best_checkpoint_path = None    
+    # ==================================================================
 
     # 获取当前时间
     current_time = datetime.datetime.now().strftime("%m%d_%H%M")
@@ -101,7 +103,7 @@ if __name__ == "__main__":
 
    
     # 加载旧模型以继续训练
-    OLD_CHECKPOINT = os.path.abspath("./marl_checkpoints/run_0513_1713\checkpoint_best_iter_025" )
+    OLD_CHECKPOINT = os.path.abspath("./marl_checkpoints/run_0513_1949\checkpoint_best_iter_007" )
 
     if os.path.exists(OLD_CHECKPOINT):
         print(f"正在恢复旧模型记忆: {OLD_CHECKPOINT}")
@@ -145,10 +147,15 @@ if __name__ == "__main__":
                 f"本轮完成: {episodes_this_iter:3d} 局 | "
                 f"总训练步数: {total_steps}")
             
-            # 保存最优主机模型
-            if reward_A > best_reward_A:
-                print(f"突破记录！发现新的最优主机奖励：{best_reward_A:.1f} -> {reward_A:.1f}")
-                best_reward_A = reward_A
+            # ================= 修改：保存最高成功率模型 =================
+            if success_rate > best_success_rate:
+                # 针对 0% 的初次保存做个特殊打印，后面的正常打印提升比例
+                if best_success_rate < 0:
+                    print(f"建立初始战术基线！当前成功率：{success_rate * 100:.1f}%")
+                else:
+                    print(f"战术突破！发现新的最高成功率：{best_success_rate * 100:.1f}% -> {success_rate * 100:.1f}%")
+                
+                best_success_rate = success_rate
                 
                 # 构建带有迭代次数的新文件夹名称
                 new_best_dir = os.path.join(CHECKPOINT_DIR, f"checkpoint_best_iter_{i+1:03d}")
