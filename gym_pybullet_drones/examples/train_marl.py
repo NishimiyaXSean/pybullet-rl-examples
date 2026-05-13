@@ -79,7 +79,7 @@ if __name__ == "__main__":
 
     '''
     # 加载旧模型以继续训练
-    OLD_CHECKPOINT = os.path.abspath("./marl_checkpoints/run_0512_1429" )
+    OLD_CHECKPOINT = os.path.abspath("./marl_checkpoints/run_0512_2112\checkpoint_final" )
 
     if os.path.exists(OLD_CHECKPOINT):
         print(f"正在恢复旧模型记忆: {OLD_CHECKPOINT}")

@@ -14,7 +14,7 @@ from ray.tune.registry import register_env
 
 from marl_env import Drone1v1MARLEnv
 
-RELATIVE_PATH = "./marl_checkpoints/run_0512_1715/checkpoint_final" 
+RELATIVE_PATH = "./marl_checkpoints/run_0512_2312/checkpoint_final" 
 CHECKPOINT_PATH = os.path.abspath(RELATIVE_PATH)
 
 def env_creator(config):
