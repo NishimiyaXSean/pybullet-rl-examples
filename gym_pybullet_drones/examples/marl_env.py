@@ -430,17 +430,36 @@ class Drone1v1MARLEnv(MultiAgentEnv):
 
             # [角色 1] 攻击机 (Attacker) 奖励结算
             if "attacker_0" in actions:
-                # 1. 靠近奖励 (缩短距离加分，被拉开扣分)
+                TERMINAL_RADIUS = 3.0  # 定义末端冲刺阶段的判定半径 (可调参，建议 3.0~4.0 米)
+            
+                # 1. 靠近奖励 (全局生效：缩短距离加分，被拉开扣分)
                 reward_A_progress = -frame_delta_dist * 20.0 
                 
-                # 2. 瞄准惩罚 (没对准就扣分)
-                reward_A_tracking = -(ata_angle_attacker / np.pi) * 2.0 * dt
-                
-                # 3. 时间惩罚 (逼迫速战速决)
+                # 2. 时间惩罚 (全局生效：逼迫速战速决)
                 reward_A_time = -0.1 * dt
                 
+                reward_A_tracking = 0.0
+                reward_A_ramming = 0.0
+
+                if dist <= TERMINAL_RADIUS:
+                    # --- 末端冲刺阶段 (Terminal Phase) ---
+                    # 1. 取消 ATA 瞄准惩罚，彻底释放机动限制
+                    reward_A_tracking = 0.0 
+                    
+                    # 2. 动能冲刺奖励 (Ramming Bonus)
+                    # 提取主机当前的绝对线速度，速度越快得分越高，鼓励“踩油门”撞击
+                    attacker_vel = self.pyb_env._getDroneStateVector(attacker_id)[10:13]
+                    vel_norm = np.linalg.norm(attacker_vel)
+                    
+                    # 速度奖励系数
+                    reward_A_ramming = vel_norm * 5.0 * dt 
+                else:
+                    # --- 中程追踪阶段 (Mid-course Phase) ---
+                    # 距离较远时，严抓航向对准
+                    reward_A_tracking = -(ata_angle_attacker / np.pi) * 2.0 * dt
+                
                 # 单帧结算
-                total_rewards["attacker_0"] += (reward_A_progress + reward_A_tracking + reward_A_time)
+                total_rewards["attacker_0"] += (reward_A_progress + reward_A_tracking + reward_A_time + reward_A_ramming)
 
             # [角色 2] 目标机 (Evader) 奖励结算
             if "evader_0" in actions:
