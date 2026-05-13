@@ -9,6 +9,7 @@ import pybullet as p
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 import ray
+from ray.rllib.algorithms.ppo import PPOConfig
 from ray.rllib.algorithms.algorithm import Algorithm
 from ray.tune.registry import register_env
 
@@ -29,12 +30,19 @@ if __name__ == "__main__":
     env_name = "drone_1v1_env"
     register_env(env_name, env_creator)
 
-    # 从 Checkpoint 加载模型
-    print(f"正在加载大脑记忆: {CHECKPOINT_PATH}")
-    algo = Algorithm.from_checkpoint(CHECKPOINT_PATH, num_env_runners=0)
+    print("正在加载训练配置...")
+    config = PPOConfig.from_checkpoint(CHECKPOINT_PATH) 
+
+    # 将测试环境的并发 Worker 数量设为 0
+    config.env_runners(num_env_runners=0) 
     
+    # 使用修改过且没有后台 Worker 的纯净配置来构建算法
+    algo = config.build_algo()
+    print("模型加载完成！即将开启唯一的渲染窗口...")
+
     # 实例化一个本地环境用于可视化
     env = Drone1v1MARLEnv(gui=True)
+    obs, info = env.reset()
     
     print("==================================")
     print("1v1 多智能体对抗演习开始！")
