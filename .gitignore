@@ -12,6 +12,7 @@ tmp/
 experiments/learning/results/save-*
 *.pkl
 *.zip
+*.json
 
 # Betaflight
 betaflight_sitl/
