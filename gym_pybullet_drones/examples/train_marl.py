@@ -85,7 +85,7 @@ if __name__ == "__main__":
 
    
     # 加载旧模型以继续训练
-    OLD_CHECKPOINT = os.path.abspath("./marl_checkpoints/run_0513_1535\checkpoint_000150" )
+    OLD_CHECKPOINT = os.path.abspath("./marl_checkpoints/run_0513_1713\checkpoint_best_iter_025" )
 
     if os.path.exists(OLD_CHECKPOINT):
         print(f"正在恢复旧模型记忆: {OLD_CHECKPOINT}")
@@ -131,30 +131,30 @@ if __name__ == "__main__":
                 new_best_dir = os.path.join(CHECKPOINT_DIR, f"checkpoint_best_iter_{i+1:03d}")
                 
                 # 保存最新的最优模型
-                saved_path = algo.save(new_best_dir)
-                print(f"--> [最优] 模型已保存至: {saved_path}")
+                algo.save(new_best_dir) 
+                print(f"--> [最优] 模型已保存至: {new_best_dir}")
                 
                 # 如果之前已经有最优模型了，将其彻底删除
                 if best_checkpoint_path and os.path.exists(best_checkpoint_path):
                     shutil.rmtree(best_checkpoint_path, ignore_errors=True)
                 
                 # 更新指针，指向刚刚保存的这个新模型
-                best_checkpoint_path = saved_path
+                best_checkpoint_path = new_best_dir
             # ==========================================================
 
             # 每 50 次迭代保存一次模型
             if (i + 1) % 50 == 0:
                 current_save_path = os.path.join(CHECKPOINT_DIR,f"checkpoint_{i+1:06d}")
-                checkpoint_path = algo.save(current_save_path)
-                print(f"--> 模型已保存至: {checkpoint_path}")
+                algo.save(current_save_path)
+                print(f"--> 模型已保存至: {current_save_path}")
 
     except KeyboardInterrupt:
         # 当你按下 Ctrl+C 时，会跳到这里执行
         print("\n==================================")
         print("收到中止信号 (Ctrl+C)！正在执行安全退出并提取大脑记忆...")
         final_save_path = os.path.join(CHECKPOINT_DIR, "checkpoint_final")
-        checkpoint_path = algo.save(final_save_path)
-        print(f"--> [最终保存] 模型已安全暂存至: {checkpoint_path}")
+        algo.save(final_save_path)
+        print(f"--> [最终保存] 模型已安全暂存至: {final_save_path}")
         print("==================================")
 
     finally:
