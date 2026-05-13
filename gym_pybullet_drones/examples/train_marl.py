@@ -1,4 +1,5 @@
 import os
+import shutil  # 新增：用于删除旧的最优模型文件夹
 # 解决 Windows 下 NumPy 和 PyTorch 的 OpenMP 冲突
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
 
@@ -72,21 +73,26 @@ if __name__ == "__main__":
     # 7. 开始训练循环
     TRAIN_ITERATIONS = 500
 
+    # ================= 新增：初始化最优记录 =================
+    best_reward_A = -float('inf')  # 初始设定为负无穷
+    best_checkpoint_path = None    # 记录上一代最优模型的路径
+    # =======================================================
+
     # 获取当前时间
     current_time = datetime.datetime.now().strftime("%m%d_%H%M")
     CHECKPOINT_DIR = f"./marl_checkpoints/run_{current_time}"
     os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 
-    '''
+   
     # 加载旧模型以继续训练
-    OLD_CHECKPOINT = os.path.abspath("./marl_checkpoints/run_0512_2112\checkpoint_final" )
+    OLD_CHECKPOINT = os.path.abspath("./marl_checkpoints/run_0513_1535\checkpoint_000150" )
 
     if os.path.exists(OLD_CHECKPOINT):
         print(f"正在恢复旧模型记忆: {OLD_CHECKPOINT}")
         algo.restore(OLD_CHECKPOINT)
     else:
         print("未发现旧模型，将从随机初始化开始全新训练。")
-    '''
+    
 
     print("==================================")
     print("开始多智能体 1v1 空战对抗训练！")
@@ -115,6 +121,26 @@ if __name__ == "__main__":
                 f"目标机奖励: {reward_E:8.1f} | "
                 f"本轮完成: {episodes_this_iter:3d} 局 | "
                 f"总训练步数: {total_steps}")
+            
+            # ================= 新增：保存最优主机模型 =================
+            if reward_A > best_reward_A:
+                print(f"突破记录！发现新的最优主机奖励：{best_reward_A:.1f} -> {reward_A:.1f}")
+                best_reward_A = reward_A
+                
+                # 构建带有迭代次数的新文件夹名称
+                new_best_dir = os.path.join(CHECKPOINT_DIR, f"checkpoint_best_iter_{i+1:03d}")
+                
+                # 保存最新的最优模型
+                saved_path = algo.save(new_best_dir)
+                print(f"--> [最优] 模型已保存至: {saved_path}")
+                
+                # 如果之前已经有最优模型了，将其彻底删除
+                if best_checkpoint_path and os.path.exists(best_checkpoint_path):
+                    shutil.rmtree(best_checkpoint_path, ignore_errors=True)
+                
+                # 更新指针，指向刚刚保存的这个新模型
+                best_checkpoint_path = saved_path
+            # ==========================================================
 
             # 每 50 次迭代保存一次模型
             if (i + 1) % 50 == 0:

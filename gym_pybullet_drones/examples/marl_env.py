@@ -162,13 +162,15 @@ class Drone1v1MARLEnv(MultiAgentEnv):
             p.addUserDebugLine([0, -15, z_offset], [0, 15, z_offset],[0, 1, 0], 4, 0, physicsClientId=self.pyb_env.CLIENT)
             p.addUserDebugLine([0, 0, z_offset],[0, 0, 15], [0, 0.5, 1], 4, 0, physicsClientId=self.pyb_env.CLIENT)
             
+            '''
             # 绘制底层地平面雷达网格 (Z=0)，范围 -15 到 15
             for i in range(-14, 15, 2):
                 if i != 0: 
                     grid_color = [0.1, 0.2, 0.3]      
                     p.addUserDebugLine([i, -15, 0.0], [i, 15, 0.0], grid_color, 1.0, 0, physicsClientId=self.pyb_env.CLIENT)
                     p.addUserDebugLine([-15, i, 0.0], [15, i, 0.0], grid_color, 1.0, 0, physicsClientId=self.pyb_env.CLIENT)
-
+            '''
+            
         return obs_dict, info_dict
     
     def _compute_obs(self, agent):
@@ -327,7 +329,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                     # 目标机：仅保留原有的物理边界限制，不施加任何额外惩罚
                     self.user_input_pos[agent][2] = np.clip(self.user_input_pos[agent][2], 1.0, 10.0)
                 # ==========================================================
-                
+
                 # PID 平滑追踪
                 self.current_target_pos[agent] = self.current_target_pos[agent] * (1 - self.SMOOTH_FACTOR) + self.user_input_pos[agent] * self.SMOOTH_FACTOR
                 
