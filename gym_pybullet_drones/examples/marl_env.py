@@ -495,6 +495,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 # 记录终端坐标 (放入 info 字典，供未来测试脚本绘图使用)
                 infos["attacker_0"]["terminal_drone_pos"] = new_attacker_state[0:3].copy()
                 infos["attacker_0"]["terminal_target_pos"] = new_evader_state[0:3].copy()
+                infos["attacker_0"]["is_success"] = True
                 break # 直接结束本轮 AI 决策的 repeat 循环
 
             # 2. 擦肩而过，触发近炸引信
@@ -518,6 +519,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 # 记录终端坐标
                 infos["attacker_0"]["terminal_drone_pos"] = new_attacker_state[0:3].copy()
                 infos["attacker_0"]["terminal_target_pos"] = new_evader_state[0:3].copy()
+                infos["attacker_0"]["is_success"] = True
                 break
 
             # 3. 地板/天空边界惩罚

@@ -2,6 +2,7 @@ import os
 import shutil  # 新增：用于删除旧的最优模型文件夹
 # 解决 Windows 下 NumPy 和 PyTorch 的 OpenMP 冲突
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
+os.environ['RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO'] = '0'
 
 import torch
 import numpy as np
@@ -17,6 +18,20 @@ from marl_env import Drone1v1MARLEnv
 
 def env_creator(config):
     return Drone1v1MARLEnv(gui=False)
+
+# ================= 新增：自定义指标回调 =================
+class DroneMetricsCallback(DefaultCallbacks):
+    def on_episode_end(self, *, worker, base_env, policies, episode, env_index, **kwargs):
+        # 尝试获取攻击机在最后一帧的 info 字典
+        info = episode.last_info_for("attacker_0")
+        
+        # 判断环境是否传回了成功的标记 (如果没有传回，默认为 False)
+        is_success = info.get("is_success", False) if info else False
+        
+        # 将结果存入自定义指标池 (True -> 1.0, False -> 0.0)
+        # RLlib 会自动帮我们在每次迭代时计算这个值的平均数 (也就是成功率)
+        episode.custom_metrics["success_rate"] = 1.0 if is_success else 0.0
+# =======================================================
 
 if __name__ == "__main__":
     # 1. 初始化 Ray 引擎
@@ -36,6 +51,7 @@ if __name__ == "__main__":
         .framework("torch") # 必须指定使用 PyTorch
         .resources(num_gpus=1 if torch.cuda.is_available() else 0)
         .env_runners(num_env_runners=4) # 开启并行的 CPU 核心来跑环境收集数据
+        .callbacks(DroneMetricsCallback)
         
         # 强制关闭尚不成熟的新 API 栈
         .api_stack(
@@ -67,7 +83,7 @@ if __name__ == "__main__":
 
     # 6. 构建算法对象
     print("正在构建 RLlib 算法对象，请稍候...")
-    algo = config.build()
+    algo = config.build_algo()
     print(f"TensorBoard 日志正在实时写入：{algo.logdir}")
 
     # 7. 开始训练循环
@@ -115,14 +131,21 @@ if __name__ == "__main__":
             # 提取总训练步数和本轮完成的回合数
             total_steps = result.get("num_env_steps_trained", 0)
             episodes_this_iter = stats.get("num_episodes", 0)
+
+            # ================= 新增：提取成功率 =================
+            # RLlib 会自动把 custom_metrics 里的字段加上 "_mean" 后缀表示平均值
+            custom_metrics = stats.get("custom_metrics", {})
+            success_rate = custom_metrics.get("success_rate_mean", 0.0)
+            # ===================================================
             
             print(f"迭代 {i+1:03d} | "
                 f"主机奖励: {reward_A:8.1f} | "
                 f"目标机奖励: {reward_E:8.1f} | "
+                f"成功率: {success_rate * 100:5.1f}% | "
                 f"本轮完成: {episodes_this_iter:3d} 局 | "
                 f"总训练步数: {total_steps}")
             
-            # ================= 新增：保存最优主机模型 =================
+            # 保存最优主机模型
             if reward_A > best_reward_A:
                 print(f"突破记录！发现新的最优主机奖励：{best_reward_A:.1f} -> {reward_A:.1f}")
                 best_reward_A = reward_A
@@ -139,8 +162,7 @@ if __name__ == "__main__":
                     shutil.rmtree(best_checkpoint_path, ignore_errors=True)
                 
                 # 更新指针，指向刚刚保存的这个新模型
-                best_checkpoint_path = new_best_dir
-            # ==========================================================
+                best_checkpoint_path = new_best_dir    
 
             # 每 50 次迭代保存一次模型
             if (i + 1) % 50 == 0:
