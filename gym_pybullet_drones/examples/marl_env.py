@@ -74,7 +74,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
         
         # 观测空间：各自的第一人称视角 (原为19维，可根据后续设计调整)
         self.observation_spaces = {
-            agent: gym.spaces.Box(low=-1.0, high=1.0, shape=(19,), dtype=np.float32)
+            agent: gym.spaces.Box(low=-1.0, high=1.0, shape=(22,), dtype=np.float32)
             for agent in self.possible_agents
         }
 
@@ -186,13 +186,44 @@ class Drone1v1MARLEnv(MultiAgentEnv):
         enemy_state = self.pyb_env._getDroneStateVector(enemy_id)
 
         my_pos = my_state[0:3]
-        my_vel = my_state[10:13]
+        my_quat = my_state[3:7]         # 自身四元数
         my_rpy = my_state[7:10]         # 自身姿态 (Roll, Pitch, Yaw)
+        my_vel = my_state[10:13]        # 自身速度
         my_ang_vel = my_state[13:16]    # 自身角速度
         my_z_height = my_state[2]       # 自身绝对高度
 
         enemy_pos = enemy_state[0:3]
+        enemy_quat = enemy_state[3:7]   # 敌机四元数
         enemy_vel = enemy_state[10:13]
+
+        # --- 新增：计算 3D 战术几何特征 (ATA, AA, HCA) ---
+        # 1. 提取双方的机头朝向向量 (X轴正方向)
+        # PyBullet 旋转矩阵解析：[R00, R01, R02, R10, R11, R12, R20, R21, R22]
+        # X轴方向的世界坐标系向量即为矩阵的第一列 [R00, R10, R20]
+        rot_mat_my = p.getMatrixFromQuaternion(my_quat)
+        my_forward = np.array([rot_mat_my[0], rot_mat_my[3], rot_mat_my[6]])
+
+        rot_mat_enemy = p.getMatrixFromQuaternion(enemy_quat)
+        enemy_forward = np.array([rot_mat_enemy[0], rot_mat_enemy[3], rot_mat_enemy[6]])
+
+        # 2. 计算视线向量 (Line of Sight, LOS)
+        los_vec = enemy_pos - my_pos
+        dist = np.linalg.norm(los_vec)
+        los_dir = los_vec / dist if dist > 1e-6 else my_forward
+
+        # 3. 计算战术夹角的余弦值 [-1, 1]
+        # ATA (天线偏角): 我的机头指向 vs 视线方向 (1表示完美瞄准)
+        cos_ata = np.clip(np.dot(my_forward, los_dir), -1.0, 1.0)
+        
+        # AA (方位角): 敌机尾部/机头 vs 视线方向 
+        # (1表示我处于敌机正后方完美的6点钟死角，-1表示处于正前方对头)
+        cos_aa = np.clip(np.dot(enemy_forward, los_dir), -1.0, 1.0)
+        
+        # HCA (航向交叉角): 我的机头指向 vs 敌机机头指向 (1表示同向飞行，-1表示对头飞行)
+        cos_hca = np.clip(np.dot(my_forward, enemy_forward), -1.0, 1.0)
+
+        tactical_geometry = np.array([cos_ata, cos_aa, cos_hca], dtype=np.float32)
+        # ------------------------------------------------
 
         # 3. 核心坐标转换：构建“我”的机头坐标系 (基于 Yaw)
         # 提取我在这个物理帧的真实朝向
@@ -236,7 +267,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
         norm_local_virt_pos = local_virt_pos / MAX_DIST
         norm_local_enemy_vel = local_enemy_vel / MAX_VEL
         
-        # 6. 拼接 19 维特征数组，形状严丝合缝
+        # 6. 拼接 22 维特征数组，形状严丝合缝
         obs_array = np.concatenate([
             norm_local_rel_pos,    # 3维: 敌机相对位置
             norm_local_vel,        # 3维: 我的空速
@@ -244,7 +275,8 @@ class Drone1v1MARLEnv(MultiAgentEnv):
             norm_local_ang_vel,    # 3维: 我的角速度
             [norm_z_height],       # 1维: 我的高度
             norm_local_virt_pos,   # 3维: PID指引点
-            norm_local_enemy_vel   # 3维: 敌机速度矢量
+            norm_local_enemy_vel,  # 3维: 敌机速度矢量
+            tactical_geometry      # 3维: 空战几何角
         ]).astype(np.float32)
 
         # 裁剪在 [-1.0, 1.0] 范围内
@@ -418,15 +450,40 @@ class Drone1v1MARLEnv(MultiAgentEnv):
             frame_delta_dist = dist - self.prev_dist
             self.prev_dist = dist
 
-            # 计算攻击机的 ATA (天线前置角 - 是否对准目标)
-            attacker_quat = p.getQuaternionFromEuler([0, 0, self.target_yaws["attacker_0"]])
-            rot_mat_A = p.getMatrixFromQuaternion(attacker_quat)
+            # 1. 从当前帧的状态中提取双方的真实物理四元数
+            attacker_quat = attacker_state[3:7]  
+            evader_quat = evader_state[3:7]
 
-            # 仅使用 XY 平面计算 ATA 夹角
-            forward_vec_xy = np.array([rot_mat_A[0], rot_mat_A[3]])
-            target_dir_xy = rel_pos_world[0:2] / (np.linalg.norm(rel_pos_world[0:2]) + 1e-6)
-            cos_theta_xy = np.clip(np.dot(forward_vec_xy, target_dir_xy), -1.0, 1.0)
-            ata_angle_attacker = np.arccos(cos_theta_xy)
+            # 2. 将四元数转换为旋转矩阵
+            rot_mat_A = p.getMatrixFromQuaternion(attacker_quat)
+            rot_mat_E = p.getMatrixFromQuaternion(evader_quat)
+
+            # 3. 提取双方的 3D 机头指向向量 (即旋转矩阵的 X 轴正方向)
+            # PyBullet 的旋转矩阵是一维数组，X轴对应索引 [0, 3, 6]
+            forward_vec_A = np.array([rot_mat_A[0], rot_mat_A[3], rot_mat_A[6]])
+            forward_vec_E = np.array([rot_mat_E[0], rot_mat_E[3], rot_mat_E[6]])
+            
+            # 4. 计算视线向量 (Line of Sight, LOS) 并归一化为单位向量
+            # 从攻击机指向目标机的向量
+            los_dir = rel_pos_world / (dist + 1e-6) 
+
+            # 5. 利用向量点乘 (Dot Product) 计算三大战术夹角的余弦值 (Cosine)
+            # 余弦值范围 [-1, 1]。1 表示方向完全一致，-1 表示方向完全相反。
+            
+            # 【ATA (攻击机天线偏角)】：攻击机机头 vs 视线方向
+            # = 1 时，完美瞄准敌机
+            cos_ata_attacker = np.clip(np.dot(forward_vec_A, los_dir), -1.0, 1.0)
+            
+            # 【AA (攻击机方位角)】：目标机机头 vs 视线方向
+            # = 1 时，代表目标机的机头和视线同向，说明攻击机正处于目标机的完美正后方(6点钟)
+            cos_aa_attacker = np.clip(np.dot(forward_vec_E, los_dir), -1.0, 1.0)
+            
+            # 【HCA (航向交叉角)】：攻击机机头 vs 目标机机头
+            # = 1 时同向伴飞，= -1 时迎头对冲，接近 0 时是呈十字交叉的剪刀机动
+            cos_hca = np.clip(np.dot(forward_vec_A, forward_vec_E), -1.0, 1.0)
+
+            # 兼容保留：将 cos 值转回弧度 
+            ata_angle_attacker = np.arccos(cos_ata_attacker)
 
             # [角色 1] 攻击机 (Attacker) 奖励结算
             if "attacker_0" in actions:
@@ -471,8 +528,16 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                     # ========================================================
                 else:
                     # --- 中程追踪阶段 (Mid-course Phase) ---
-                    # 距离较远时，严抓航向对准
-                    reward_A_tracking = -(ata_angle_attacker / np.pi) * 2.0 * dt
+    
+                    # 只有当攻击机在敌机后半球 (cos_aa_attacker > 0)，且机头大致指向敌机 (cos_ata_attacker > 0) 时，才给予阵位奖励。
+                    if cos_ata_attacker > 0 and cos_aa_attacker > 0:
+                        # 组合奖励：越接近完美的尾随瞄准 (两者皆趋近于 1)，得分呈指数级上升
+                        advantage_score = (cos_ata_attacker * cos_aa_attacker) ** 2
+                        reward_A_tracking = advantage_score * 5.0 * dt
+                    else:
+                        # 如果不在优势阵位，给予轻微的“脱靶惩罚”，逼迫其进行机动
+                        # 惩罚力度与机头偏离程度成正比
+                        reward_A_tracking = -(1.0 - cos_ata_attacker) * 1.0 * dt
                 
                 # 单帧结算
                 total_rewards["attacker_0"] += (reward_A_progress + reward_A_tracking + reward_A_time + reward_A_ramming)
@@ -496,12 +561,18 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                     # 1. 逃逸奖励
                     reward_E_escape = frame_delta_dist * 15.0  
                     
-                    # 2. 智能规避奖励 (Jinking)
-                    if ata_angle_attacker < (np.pi / 6.0):
-                        evader_action = int(actions["evader_0"])
-                        _, n_n, mu = self.bfm_action_mapping[evader_action]
-                        if abs(n_n) > 1.5 or abs(mu) > 0:
-                            reward_E_jinking = 1.0 * dt
+                    # 2. 角度破坏奖励 (Spoofing Reward)
+                    threat_penalty = 0.0
+                    if cos_ata_attacker > 0.5: # 敌机大致看向我 (夹角 < 60度)
+                        threat_penalty = - (cos_ata_attacker ** 2) * 2.0 * dt
+                    
+                    # 奖励项：鼓励诱导敌方进入大 HCA (航向交叉) 的剪刀机动状态
+                    # 如果双方在近距离呈大角度交叉 (cos_hca 接近 0 或负数)，说明规避有效
+                    hca_reward = 0.0
+                    if cos_hca < 0.2: # 航向差异明显，非同向伴飞
+                        hca_reward = (0.2 - cos_hca) * 1.5 * dt
+                        
+                    reward_E_jinking = threat_penalty + hca_reward
                 else:
                     # --- 安全区域：鼓励直线平飞 ---
                     evader_action = int(actions["evader_0"])
@@ -585,7 +656,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 observations[agent] = self._compute_obs(agent)
             else:
                 # 如果飞机死了，按 PettingZoo 规矩传零向量
-                observations[agent] = np.zeros(19, dtype=np.float32)
+                observations[agent] = np.zeros(22, dtype=np.float32)
 
         # 必须清理掉本回合死亡的智能体
         self.agents = [
