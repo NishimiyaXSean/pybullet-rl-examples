@@ -20,7 +20,6 @@ from marl_env import Drone1v1MARLEnv
 def env_creator(config):
     return Drone1v1MARLEnv(gui=False)
 
-# ================= 新增：自定义指标回调 =================
 class DroneMetricsCallback(DefaultCallbacks):
     def on_episode_end(self, *, worker, base_env, policies, episode, env_index, **kwargs):
         # 尝试获取攻击机在最后一帧的 info 字典
@@ -30,9 +29,8 @@ class DroneMetricsCallback(DefaultCallbacks):
         is_success = info.get("is_success", False) if info else False
         
         # 将结果存入自定义指标池 (True -> 1.0, False -> 0.0)
-        # RLlib 会自动帮我们在每次迭代时计算这个值的平均数 (也就是成功率)
+        # 在每次迭代时计算这个值的平均数-成功率
         episode.custom_metrics["success_rate"] = 1.0 if is_success else 0.0
-# =======================================================
 
 if __name__ == "__main__":
     # 1. 初始化 Ray 引擎
@@ -102,7 +100,7 @@ if __name__ == "__main__":
 
     
     # 加载旧模型以继续训练
-    OLD_CHECKPOINT = os.path.abspath("./marl_checkpoints/run_0514_1033/checkpoint_best_iter_006" )
+    OLD_CHECKPOINT = os.path.abspath("./marl_checkpoints/run_0513_1713/checkpoint_best_iter_025" )
 
     if os.path.exists(OLD_CHECKPOINT):
         print(f"正在恢复旧模型记忆: {OLD_CHECKPOINT}")
@@ -133,11 +131,10 @@ if __name__ == "__main__":
             total_steps = result.get("num_env_steps_trained", 0)
             episodes_this_iter = stats.get("num_episodes", 0)
 
-            # ================= 新增：提取成功率 =================
+            # 提取成功率 
             # RLlib 会自动把 custom_metrics 里的字段加上 "_mean" 后缀表示平均值
             custom_metrics = stats.get("custom_metrics", {})
             success_rate = custom_metrics.get("success_rate_mean", 0.0)
-            # ===================================================
             
             print(f"迭代 {i+1:03d} | "
                 f"主机奖励: {reward_A:8.1f} | "
@@ -146,7 +143,7 @@ if __name__ == "__main__":
                 f"本轮完成: {episodes_this_iter:3d} 局 | "
                 f"总训练步数: {total_steps}")
             
-            # ================= 修改：保存最高成功率模型 =================
+            # 保存最高成功率模型
             if success_rate > best_success_rate:
                 # 针对 0% 的初次保存做个特殊打印，后面的正常打印提升比例
                 if best_success_rate < 0:
