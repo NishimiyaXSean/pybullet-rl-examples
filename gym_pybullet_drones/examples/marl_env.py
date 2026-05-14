@@ -431,12 +431,23 @@ class Drone1v1MARLEnv(MultiAgentEnv):
             # [角色 1] 攻击机 (Attacker) 奖励结算
             if "attacker_0" in actions:
                 TERMINAL_RADIUS = 3.0  # 定义末端冲刺阶段的判定半径 (可调参，建议 3.0~4.0 米)
-            
+
+                # 计算双方的高度差 (Z轴距离)
+                dz = attacker_pos[2] - evader_pos[2]
+
                 # 1. 靠近奖励 (全局生效：缩短距离加分，被拉开扣分)
                 reward_A_progress = -frame_delta_dist * 20.0 
                 
                 # 2. 时间惩罚 (全局生效：逼迫速战速决)
                 reward_A_time = -0.1 * dt
+
+                # ================= 新增：Z 轴共面对齐惩罚 =================
+                # 逼迫主机下降到与目标机大致平齐的高度。
+                # 如果高度差大于 1.0 米，则开始施加基于高度差的持续惩罚
+                reward_A_z_penalty = 0.0
+                if abs(dz) > 1.0:
+                    reward_A_z_penalty = -(abs(dz) - 1.0) * 1.5 * dt
+                # ========================================================
                 
                 reward_A_tracking = 0.0
                 reward_A_ramming = 0.0
@@ -451,8 +462,13 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                     attacker_vel = self.pyb_env._getDroneStateVector(attacker_id)[10:13]
                     vel_norm = np.linalg.norm(attacker_vel)
                     
-                    # 速度奖励系数
-                    reward_A_ramming = vel_norm * 5.0 * dt 
+                    # ================= 修改：引入水平冲刺系数 =================
+                    # 避免主机在最后一刻从天顶垂直“砸”向目标。
+                    # 只有当高度差极小 (比如小于 1.5 米) 时，才给予 100% 的速度冲刺奖励。
+                    # 高度差越大，冲刺奖励的折扣越狠。
+                    z_alignment_factor = np.clip(1.5 - abs(dz), 0.0, 1.0)
+                    reward_A_ramming = vel_norm * 5.0 * dt * z_alignment_factor
+                    # ========================================================
                 else:
                     # --- 中程追踪阶段 (Mid-course Phase) ---
                     # 距离较远时，严抓航向对准

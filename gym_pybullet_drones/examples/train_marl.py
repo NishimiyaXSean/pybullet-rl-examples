@@ -101,16 +101,16 @@ if __name__ == "__main__":
     CHECKPOINT_DIR = f"./marl_checkpoints/run_{current_time}"
     os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 
-   
+    '''
     # 加载旧模型以继续训练
-    OLD_CHECKPOINT = os.path.abspath("./marl_checkpoints/run_0513_1949\checkpoint_best_iter_007" )
+    OLD_CHECKPOINT = os.path.abspath("./marl_checkpoints/run_0513_2337/checkpoint_best_iter_002" )
 
     if os.path.exists(OLD_CHECKPOINT):
         print(f"正在恢复旧模型记忆: {OLD_CHECKPOINT}")
         algo.restore(OLD_CHECKPOINT)
     else:
         print("未发现旧模型，将从随机初始化开始全新训练。")
-    
+    '''
 
     print("==================================")
     print("开始多智能体 1v1 空战对抗训练！")
