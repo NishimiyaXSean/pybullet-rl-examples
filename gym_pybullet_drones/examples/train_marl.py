@@ -2,7 +2,6 @@ import os
 import shutil  # 新增：用于删除旧的最优模型文件夹
 # 解决 Windows 下 NumPy 和 PyTorch 的 OpenMP 冲突
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
-os.environ['RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO'] = '0'
 
 import torch
 import numpy as np
@@ -20,19 +19,28 @@ from marl_env import Drone1v1MARLEnv
 def env_creator(config):
     return Drone1v1MARLEnv(gui=False)
 
-# ================= 新增：自定义指标回调 =================
 class DroneMetricsCallback(DefaultCallbacks):
     def on_episode_end(self, *, worker, base_env, policies, episode, env_index, **kwargs):
         # 尝试获取攻击机在最后一帧的 info 字典
         info = episode.last_info_for("attacker_0")
+
+        if info:
+            reason = info.get("reason", "timeout")
+        else:
+            reason = "timeout" # 如果没有 info，说明是时间耗尽平局
         
-        # 判断环境是否传回了成功的标记 (如果没有传回，默认为 False)
-        is_success = info.get("is_success", False) if info else False
+        # 精细化拆解指标 (True -> 1.0, False -> 0.0)
+        # 1. 成功率: 真正进入有效射程
+        episode.custom_metrics["rate_success"] = 1.0 if reason == "success" else 0.0
         
-        # 将结果存入自定义指标池 (True -> 1.0, False -> 0.0)
-        # RLlib 会自动帮我们在每次迭代时计算这个值的平均数 (也就是成功率)
-        episode.custom_metrics["success_rate"] = 1.0 if is_success else 0.0
-# =======================================================
+        # 2. 坠地率
+        episode.custom_metrics["rate_crash"] = 1.0 if reason == "ground_crash" else 0.0
+        
+        # 3. 越界率
+        episode.custom_metrics["rate_oob"] = 1.0 if reason == "out_of_bounds" else 0.0
+        
+        # 4. 超时率: 目标机成功存活到了回合结束
+        episode.custom_metrics["rate_timeout"] = 1.0 if reason == "timeout" else 0.0
 
 if __name__ == "__main__":
     # 1. 初始化 Ray 引擎
@@ -42,8 +50,11 @@ if __name__ == "__main__":
     env_name = "drone_1v1_env"
     register_env(env_name, env_creator)
 
-    obs_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(19,), dtype=np.float32)
-    act_space = gym.spaces.Discrete(11)
+    # 动态获取空间维度
+    temp_env = env_creator({})
+    obs_space = temp_env.observation_spaces["attacker_0"]
+    act_space = temp_env.action_spaces["attacker_0"]
+    print(f"检测到环境观测空间维度: {obs_space.shape}, 动作空间: {act_space.n}")
 
     # 3. 核心算法配置 (PPOConfig)
     config = (
@@ -77,8 +88,11 @@ if __name__ == "__main__":
             model={"fcnet_hiddens": [256, 256, 128], "fcnet_activation": "relu"},
             train_batch_size=4096,
             minibatch_size=256,
-            lr=1e-4,
-            entropy_coeff=0.001,
+            lr=3e-4,
+            entropy_coeff=0.05,
+            # 限制价值函数的截断 (Clip Param)
+            clip_param=0.2,
+            vf_clip_param=10.0,
         )
     )
 
@@ -90,26 +104,26 @@ if __name__ == "__main__":
     # 7. 开始训练循环
     TRAIN_ITERATIONS = 500
 
-    # ================= 修改：初始化最优记录 (基于成功率) =================
-    # 初始化为 -0.01（负数），这样可以确保第一轮训练（即使成功率是 0%）也能作为保底模型保存下来
+    # 初始化最优记录 (基于成功率)
+    # 初始化为 -0.01，这样可以确保第一轮训练（即使成功率是 0%）也能作为保底模型保存下来
     best_success_rate = -0.01  
     best_checkpoint_path = None    
-    # ==================================================================
 
     # 获取当前时间
     current_time = datetime.datetime.now().strftime("%m%d_%H%M")
     CHECKPOINT_DIR = f"./marl_checkpoints/run_{current_time}"
     os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 
-   
+    '''
     # 加载旧模型以继续训练
-    OLD_CHECKPOINT = os.path.abspath("./marl_checkpoints/run_0513_1949\checkpoint_best_iter_007" )
+    OLD_CHECKPOINT = os.path.abspath("./marl_checkpoints/run_0513_1713/checkpoint_best_iter_025" )
 
     if os.path.exists(OLD_CHECKPOINT):
         print(f"正在恢复旧模型记忆: {OLD_CHECKPOINT}")
         algo.restore(OLD_CHECKPOINT)
     else:
         print("未发现旧模型，将从随机初始化开始全新训练。")
+    '''
     
 
     print("==================================")
@@ -134,20 +148,21 @@ if __name__ == "__main__":
             total_steps = result.get("num_env_steps_trained", 0)
             episodes_this_iter = stats.get("num_episodes", 0)
 
-            # ================= 新增：提取成功率 =================
+            # 提取成功率 
             # RLlib 会自动把 custom_metrics 里的字段加上 "_mean" 后缀表示平均值
             custom_metrics = stats.get("custom_metrics", {})
-            success_rate = custom_metrics.get("success_rate_mean", 0.0)
-            # ===================================================
+            success_rate = custom_metrics.get("rate_success_mean", 0.0)
+            crash_rate   = custom_metrics.get("rate_crash_mean", 0.0)
+            oob_rate     = custom_metrics.get("rate_oob_mean", 0.0)
+            timeout_rate = custom_metrics.get("rate_timeout_mean", 0.0)
             
             print(f"迭代 {i+1:03d} | "
-                f"主机奖励: {reward_A:8.1f} | "
-                f"目标机奖励: {reward_E:8.1f} | "
-                f"成功率: {success_rate * 100:5.1f}% | "
-                f"本轮完成: {episodes_this_iter:3d} 局 | "
-                f"总训练步数: {total_steps}")
+                  f"奖励(主/敌): {reward_A:6.1f} / {reward_E:6.1f} | "
+                  f"终局占比 -> 击杀:{success_rate*100:5.1f}% | 坠地:{crash_rate*100:5.1f}% | 越界:{oob_rate*100:5.1f}% | 超时:{timeout_rate*100:5.1f}% | "
+                  f"本轮局数: {episodes_this_iter:3d} | "
+                  f"总训练步数: {total_steps}")
             
-            # ================= 修改：保存最高成功率模型 =================
+            # 保存最高成功率模型
             if success_rate > best_success_rate:
                 # 针对 0% 的初次保存做个特殊打印，后面的正常打印提升比例
                 if best_success_rate < 0:

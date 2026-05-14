@@ -1,1 +1,0 @@
-{"type": "Algorithm", "checkpoint_version": "1.1", "format": "cloudpickle", "state_file": "marl_checkpoints\\run_0513_1713\\checkpoint_best_iter_025\\algorithm_state.pkl", "policy_ids": ["policy_attacker", "policy_evader"], "ray_version": "2.55.1", "ray_commit": "237c2455ebb1ea15a32dd9e1fdeb2d617badc37f"}
