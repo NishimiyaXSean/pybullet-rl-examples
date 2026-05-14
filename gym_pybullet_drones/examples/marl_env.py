@@ -508,6 +508,13 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                     # BFM 动作库中：0=匀速直飞, 1=加速直飞, 2=减速直飞
                     if evader_action in [0, 1, 2]: 
                         reward_E_straight = 0.5 * dt
+                        current_z = evader_pos[2] 
+                        # 设定一个期望的安全平飞高度
+                        target_altitude = 3.0 
+                        height_error = target_altitude - current_z
+                        if height_error > 2.0: 
+                            # 掉得越多，惩罚越重
+                            reward_E_straight -= (height_error * 0.01 * dt)
                     else:
                         # 如果在安全距离做大过载机动，给予轻微惩罚
                         reward_E_straight = -0.3 * dt

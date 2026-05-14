@@ -77,8 +77,8 @@ if __name__ == "__main__":
             model={"fcnet_hiddens": [256, 256, 128], "fcnet_activation": "relu"},
             train_batch_size=4096,
             minibatch_size=256,
-            lr=1e-4,
-            entropy_coeff=0.001,
+            lr=3e-4,
+            entropy_coeff=0.01,
         )
     )
 
@@ -90,27 +90,26 @@ if __name__ == "__main__":
     # 7. 开始训练循环
     TRAIN_ITERATIONS = 500
 
-    # ================= 修改：初始化最优记录 (基于成功率) =================
-    # 初始化为 -0.01（负数），这样可以确保第一轮训练（即使成功率是 0%）也能作为保底模型保存下来
+    # 初始化最优记录 (基于成功率)
+    # 初始化为 -0.01，这样可以确保第一轮训练（即使成功率是 0%）也能作为保底模型保存下来
     best_success_rate = -0.01  
     best_checkpoint_path = None    
-    # ==================================================================
 
     # 获取当前时间
     current_time = datetime.datetime.now().strftime("%m%d_%H%M")
     CHECKPOINT_DIR = f"./marl_checkpoints/run_{current_time}"
     os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 
-    '''
+    
     # 加载旧模型以继续训练
-    OLD_CHECKPOINT = os.path.abspath("./marl_checkpoints/run_0513_2337/checkpoint_best_iter_002" )
+    OLD_CHECKPOINT = os.path.abspath("./marl_checkpoints/run_0514_1033/checkpoint_best_iter_006" )
 
     if os.path.exists(OLD_CHECKPOINT):
         print(f"正在恢复旧模型记忆: {OLD_CHECKPOINT}")
         algo.restore(OLD_CHECKPOINT)
     else:
         print("未发现旧模型，将从随机初始化开始全新训练。")
-    '''
+    
 
     print("==================================")
     print("开始多智能体 1v1 空战对抗训练！")
