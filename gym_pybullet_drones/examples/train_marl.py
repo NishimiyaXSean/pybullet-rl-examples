@@ -2,7 +2,6 @@ import os
 import shutil  # 新增：用于删除旧的最优模型文件夹
 # 解决 Windows 下 NumPy 和 PyTorch 的 OpenMP 冲突
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
-os.environ['RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO'] = '0'
 
 import torch
 import numpy as np
@@ -152,14 +151,16 @@ if __name__ == "__main__":
             # 提取成功率 
             # RLlib 会自动把 custom_metrics 里的字段加上 "_mean" 后缀表示平均值
             custom_metrics = stats.get("custom_metrics", {})
-            success_rate = custom_metrics.get("success_rate_mean", 0.0)
+            success_rate = custom_metrics.get("rate_success_mean", 0.0)
+            crash_rate   = custom_metrics.get("rate_crash_mean", 0.0)
+            oob_rate     = custom_metrics.get("rate_oob_mean", 0.0)
+            timeout_rate = custom_metrics.get("rate_timeout_mean", 0.0)
             
             print(f"迭代 {i+1:03d} | "
-                f"主机奖励: {reward_A:8.1f} | "
-                f"目标机奖励: {reward_E:8.1f} | "
-                f"成功率: {success_rate * 100:5.1f}% | "
-                f"本轮完成: {episodes_this_iter:3d} 局 | "
-                f"总训练步数: {total_steps}")
+                  f"奖励(主/敌): {reward_A:6.1f} / {reward_E:6.1f} | "
+                  f"终局占比 -> 击杀:{success_rate*100:5.1f}% | 坠地:{crash_rate*100:5.1f}% | 越界:{oob_rate*100:5.1f}% | 超时:{timeout_rate*100:5.1f}% | "
+                  f"本轮局数: {episodes_this_iter:3d} | "
+                  f"总训练步数: {total_steps}")
             
             # 保存最高成功率模型
             if success_rate > best_success_rate:
