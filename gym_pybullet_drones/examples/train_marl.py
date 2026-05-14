@@ -34,15 +34,15 @@ class DroneMetricsCallback(DefaultCallbacks):
         # 1. 成功率: 真正进入有效射程
         episode.custom_metrics["rate_success"] = 1.0 if reason == "success" else 0.0
         
-        # 2. 坠地率: 没控制好高度，摔死
+        # 2. 坠地率
         episode.custom_metrics["rate_crash"] = 1.0 if reason == "ground_crash" else 0.0
         
-        # 3. 越界率: 飞出了竞技场天花板
+        # 3. 越界率
         episode.custom_metrics["rate_oob"] = 1.0 if reason == "out_of_bounds" else 0.0
         
         # 4. 超时率: 目标机成功存活到了回合结束
         episode.custom_metrics["rate_timeout"] = 1.0 if reason == "timeout" else 0.0
-        
+
 if __name__ == "__main__":
     # 1. 初始化 Ray 引擎
     ray.init()
