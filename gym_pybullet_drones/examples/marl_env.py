@@ -322,7 +322,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
             rpms = np.zeros((2, 4))
             
             for i, agent in enumerate(["attacker_0", "evader_0"]):
-                if agent not in actions: # 如果这架飞机已经坠毁，跳过
+                if agent not in actions or terminations[agent]: # 如果这架飞机已经判定死亡，则直接跳过
                     continue
                     
                 action_int = int(actions[agent])
@@ -444,7 +444,6 @@ class Drone1v1MARLEnv(MultiAgentEnv):
 
             # 计算两架飞机的当前距离和相对位置
             rel_pos_world = evader_pos - attacker_pos
-            dist = np.linalg.norm(rel_pos_world)
 
             # 计算距离变化率
             frame_delta_dist = dist - self.prev_dist
@@ -486,7 +485,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
             ata_angle_attacker = np.arccos(cos_ata_attacker)
 
             # [角色 1] 攻击机 (Attacker) 奖励结算
-            if "attacker_0" in actions:
+            if "attacker_0" in actions and not terminations["attacker_0"]:
                 TERMINAL_RADIUS = 3.0  # 定义末端冲刺阶段的判定半径 (可调参，建议 3.0~4.0 米)
 
                 # 计算双方的高度差 (Z轴距离)
@@ -543,7 +542,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 total_rewards["attacker_0"] += (reward_A_progress + reward_A_tracking + reward_A_time + reward_A_ramming)
 
             # [角色 2] 目标机 (Evader) 奖励结算
-            if "evader_0" in actions:
+            if "evader_0" in actions and not terminations["evader_0"]:
                 WARNING_RADIUS = 6.0  # 告警半径设置为 6 米
                 
                 reward_E_escape = 0.0
@@ -582,7 +581,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                         current_z = evader_pos[2] 
                         # 设定一个期望的安全平飞高度
                         target_altitude = 3.0 
-                        height_error = target_altitude - current_z
+                        height_error = abs(target_altitude - current_z)
                         if height_error > 2.0: 
                             # 掉得越多，惩罚越重
                             reward_E_straight -= (height_error * 0.01 * dt)
@@ -600,8 +599,8 @@ class Drone1v1MARLEnv(MultiAgentEnv):
 
             # 1. 动能撞击 / 击杀成功
             if new_dist < 0.15:
-                if "attacker_0" in total_rewards: total_rewards["attacker_0"] += 300.0
-                if "evader_0" in total_rewards: total_rewards["evader_0"] -= 300.0
+                if not terminations["attacker_0"]: total_rewards["attacker_0"] += 300.0
+                if not terminations["evader_0"]: total_rewards["evader_0"] -= 300.0
                 terminations["attacker_0"] = True
                 terminations["evader_0"] = True
 
@@ -637,7 +636,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
 
             # 3. 地板/天空边界惩罚
             for agent, state in zip(["attacker_0", "evader_0"], [new_attacker_state, new_evader_state]):
-                if agent in total_rewards: # 只有这个 agent 还在计分板上，才对它进行边界惩罚！
+                if agent in actions and not terminations[agent]: # 只有这个 agent 还在计分板上，才对它进行边界惩罚！
                     if state[2] < 0.1 or state[2] > 12.0:
                         total_rewards[agent] -= 100.0
                         terminations[agent] = True
