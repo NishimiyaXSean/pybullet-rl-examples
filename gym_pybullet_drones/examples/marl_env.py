@@ -622,8 +622,8 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 reward_terminal = 50.0 + 250.0 * score_ratio
                 
                 # 双方进行分数结算 (零和博弈)
-                if "attacker_0" in total_rewards: total_rewards["attacker_0"] += reward_terminal
-                if "evader_0" in total_rewards: total_rewards["evader_0"] -= reward_terminal
+                if "attacker_0" in total_rewards and not terminations["attacker_0"]: total_rewards["attacker_0"] += reward_terminal
+                if "evader_0" in total_rewards and not terminations["evader_0"]: total_rewards["evader_0"] -= reward_terminal
                 
                 terminations["attacker_0"] = True
                 terminations["evader_0"] = True
@@ -637,9 +637,14 @@ class Drone1v1MARLEnv(MultiAgentEnv):
             # 3. 地板/天空边界惩罚
             for agent, state in zip(["attacker_0", "evader_0"], [new_attacker_state, new_evader_state]):
                 if agent in actions and not terminations[agent]: # 只有这个 agent 还在计分板上，才对它进行边界惩罚！
-                    if state[2] < 0.1 or state[2] > 12.0:
+                    if state[2] < 0.1:
                         total_rewards[agent] -= 100.0
                         terminations[agent] = True
+                        infos[agent]["reason"] = "ground_crash" 
+                    elif state[2] > 12.0:
+                        total_rewards[agent] -= 100.0
+                        terminations[agent] = True
+                        infos[agent]["reason"] = "out_of_bounds" 
 
         # --- 退出 Frame Skip 循环，结算当前决策步的最终结果 ---
         

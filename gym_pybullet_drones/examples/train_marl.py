@@ -24,14 +24,25 @@ class DroneMetricsCallback(DefaultCallbacks):
     def on_episode_end(self, *, worker, base_env, policies, episode, env_index, **kwargs):
         # 尝试获取攻击机在最后一帧的 info 字典
         info = episode.last_info_for("attacker_0")
-        
-        # 判断环境是否传回了成功的标记 (如果没有传回，默认为 False)
-        is_success = info.get("is_success", False) if info else False
-        
-        # 将结果存入自定义指标池 (True -> 1.0, False -> 0.0)
-        # 在每次迭代时计算这个值的平均数-成功率
-        episode.custom_metrics["success_rate"] = 1.0 if is_success else 0.0
 
+        if info:
+            reason = info.get("reason", "timeout")
+        else:
+            reason = "timeout" # 如果没有 info，说明是时间耗尽平局
+        
+        # 精细化拆解指标 (True -> 1.0, False -> 0.0)
+        # 1. 成功率: 真正进入有效射程
+        episode.custom_metrics["rate_success"] = 1.0 if reason == "success" else 0.0
+        
+        # 2. 坠地率: 没控制好高度，摔死
+        episode.custom_metrics["rate_crash"] = 1.0 if reason == "ground_crash" else 0.0
+        
+        # 3. 越界率: 飞出了竞技场天花板
+        episode.custom_metrics["rate_oob"] = 1.0 if reason == "out_of_bounds" else 0.0
+        
+        # 4. 超时率: 目标机成功存活到了回合结束
+        episode.custom_metrics["rate_timeout"] = 1.0 if reason == "timeout" else 0.0
+        
 if __name__ == "__main__":
     # 1. 初始化 Ray 引擎
     ray.init()
@@ -40,8 +51,11 @@ if __name__ == "__main__":
     env_name = "drone_1v1_env"
     register_env(env_name, env_creator)
 
-    obs_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(19,), dtype=np.float32)
-    act_space = gym.spaces.Discrete(11)
+    # 动态获取空间维度
+    temp_env = env_creator({})
+    obs_space = temp_env.observation_spaces["attacker_0"]
+    act_space = temp_env.action_spaces["attacker_0"]
+    print(f"检测到环境观测空间维度: {obs_space.shape}, 动作空间: {act_space.n}")
 
     # 3. 核心算法配置 (PPOConfig)
     config = (
@@ -76,7 +90,10 @@ if __name__ == "__main__":
             train_batch_size=4096,
             minibatch_size=256,
             lr=3e-4,
-            entropy_coeff=0.01,
+            entropy_coeff=0.05,
+            # 限制价值函数的截断 (Clip Param)
+            clip_param=0.2,
+            vf_clip_param=10.0,
         )
     )
 
@@ -98,7 +115,7 @@ if __name__ == "__main__":
     CHECKPOINT_DIR = f"./marl_checkpoints/run_{current_time}"
     os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 
-    
+    '''
     # 加载旧模型以继续训练
     OLD_CHECKPOINT = os.path.abspath("./marl_checkpoints/run_0513_1713/checkpoint_best_iter_025" )
 
@@ -107,6 +124,7 @@ if __name__ == "__main__":
         algo.restore(OLD_CHECKPOINT)
     else:
         print("未发现旧模型，将从随机初始化开始全新训练。")
+    '''
     
 
     print("==================================")
