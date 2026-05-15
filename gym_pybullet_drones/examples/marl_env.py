@@ -328,6 +328,19 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 action_int = int(actions[agent])
                 n_x, n_n, mu = self.bfm_action_mapping[action_int]
                 
+                # ================= 新增：近地动作强制覆写 (GPWS) =================
+                agent_current_z = attacker_state[2] if i == 0 else evader_state[2]
+                
+                # 如果高度低于 2.5 米，且动作包含向下的法向过载 (俯冲/下洗)
+                if agent_current_z < 2.5 and n_n < 0:
+                    # 强制将机动改为“跃升” (拉起机头保命)
+                    n_n = 8  
+                    mu = 0.0 # 改平滚转角
+                    
+                    # 给予一个额外的惩罚
+                    total_rewards[agent] -= 2.0 * dt
+                # ===============================================================
+
                 # 这里引入非对称设计：目标机(evader)的速度稍微慢一点
                 speed_multiplier = 0.6 if agent == "evader_0" else 1.0
                 vx = (1.5 + n_x * 0.8) * speed_multiplier
