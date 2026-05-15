@@ -20,8 +20,8 @@ class Drone1v1MARLEnv(MultiAgentEnv):
         # 2. 实例化底层物理引擎 (CtrlAviary)
         # 将两架飞机分别放置在场地的对角线位置，拉开初始距离
         init_xyzs = np.array([
-            [-5.0, -5.0, 2.0],  # attacker_0 的初始位置 (ID: 0)
-            [ 5.0,  5.0, 3.0]   # evader_0   的初始位置 (ID: 1)
+            [-5.0, -5.0, 6.0],  # attacker_0 的初始位置 (ID: 0)
+            [ 5.0,  5.0, 5.0]   # evader_0   的初始位置 (ID: 1)
         ])
         
         self.pyb_env = CtrlAviary(
@@ -101,12 +101,12 @@ class Drone1v1MARLEnv(MultiAgentEnv):
         # 2. 在该象限内，随机生成 3.0 到 8.0 米的安全边界距离
         attacker_x = sign_x * np.random.uniform(3.0, 8.0)
         attacker_y = sign_y * np.random.uniform(3.0, 8.0)
-        attacker_z = np.random.uniform(1.5, 4.0) # 高度也适当随机
+        attacker_z = np.random.uniform(5.0, 8.0) # 高度也适当随机
 
         # 3. 目标机强制取相反符号，确保永远出生在对角象限！
         evader_x = -sign_x * np.random.uniform(3.0, 8.0)
         evader_y = -sign_y * np.random.uniform(3.0, 8.0)
-        evader_z = np.random.uniform(2.0, 5.0)
+        evader_z = np.random.uniform(4.0, 7.0)
 
         # 组合成新的初始坐标数组
         new_init_xyzs = np.array([
@@ -497,12 +497,16 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 # 2. 时间惩罚 (全局生效：逼迫速战速决)
                 reward_A_time = -0.1 * dt
 
-                # ================= 新增：Z 轴共面对齐惩罚 =================
-                # 逼迫主机下降到与目标机大致平齐的高度。
-                # 如果高度差大于 1.0 米，则开始施加基于高度差的持续惩罚
+                # Z 轴共面对齐惩罚 
                 reward_A_z_penalty = 0.0
-                if abs(dz) > 1.0:
+                if abs(dz) > 1.0: # 如果高度差大于 1.0 米，则开始施加基于高度差的持续惩罚，逼迫主机下降到与目标机大致平齐的高度。
                     reward_A_z_penalty = -(abs(dz) - 1.0) * 1.5 * dt
+
+                # ================= 新增：攻击机软地板警告 =================
+                # 设定 3.0 米为“近地警告线”。低于此高度，每掉 0.1 米扣分越狠
+                reward_A_ground_warning = 0.0
+                if attacker_pos[2] < 3.0:  # 设定 3.0 米为“近地警告线”。低于此高度，每掉 0.1 米扣分越狠
+                    reward_A_ground_warning = -(3.0 - attacker_pos[2]) * 5.0 * dt
                 # ========================================================
                 
                 reward_A_tracking = 0.0
@@ -539,7 +543,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                         reward_A_tracking = -(1.0 - cos_ata_attacker) * 1.0 * dt
                 
                 # 单帧结算
-                total_rewards["attacker_0"] += (reward_A_progress + reward_A_tracking + reward_A_time + reward_A_ramming)
+                total_rewards["attacker_0"] += (reward_A_progress + reward_A_tracking + reward_A_time + reward_A_ramming + reward_A_z_penalty + reward_A_ground_warning)
 
             # [角色 2] 目标机 (Evader) 奖励结算
             if "evader_0" in actions and not terminations["evader_0"]:
@@ -580,7 +584,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                         reward_E_straight = 0.5 * dt
                         current_z = evader_pos[2] 
                         # 设定一个期望的安全平飞高度
-                        target_altitude = 3.0 
+                        target_altitude = 6.0 
                         height_error = abs(target_altitude - current_z)
                         if height_error > 2.0: 
                             # 掉得越多，惩罚越重
@@ -588,9 +592,15 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                     else:
                         # 如果在安全距离做大过载机动，给予轻微惩罚
                         reward_E_straight = -0.3 * dt
+
+                # ================= 新增：目标机软地板警告 =================
+                reward_E_ground_warning = 0.0
+                if evader_pos[2] < 3.0:
+                    reward_E_ground_warning = -(3.0 - evader_pos[2]) * 5.0 * dt
+                # ========================================================
                         
                 # 单帧结算
-                total_rewards["evader_0"] += (reward_E_escape + reward_E_survival + reward_E_jinking + reward_E_straight)
+                total_rewards["evader_0"] += (reward_E_escape + reward_E_survival + reward_E_jinking + reward_E_straight + reward_E_ground_warning)
 
             # --- 碰撞与终止条件检测 (在每一小帧都要检测) ---
             new_attacker_state = self.pyb_env._getDroneStateVector(attacker_id)
