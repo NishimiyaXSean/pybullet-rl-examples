@@ -651,7 +651,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                         total_rewards[agent] -= 100.0
                         terminations[agent] = True
                         infos[agent]["reason"] = "ground_crash" 
-                    elif state[2] > 12.0:
+                    elif state[2] > 15.0:
                         total_rewards[agent] -= 100.0
                         terminations[agent] = True
                         infos[agent]["reason"] = "out_of_bounds" 
