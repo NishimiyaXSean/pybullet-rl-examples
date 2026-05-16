@@ -125,6 +125,8 @@ class Drone1v1MARLEnv(MultiAgentEnv):
         self.target_yaws = {"attacker_0": 0.0, "evader_0": 0.0}
         self.user_input_pos = {}
         self.current_target_pos = {}
+        self.current_target_vel = {agent: np.zeros(3) for agent in self.agents}
+        self.last_actions = {"attacker_0": 0, "evader_0": 0}
         
         # 为每架飞机提取真实的初始物理位置
         for i, agent in enumerate(self.agents):
@@ -308,6 +310,14 @@ class Drone1v1MARLEnv(MultiAgentEnv):
         attacker_id = 0
         evader_id = 1
 
+        # ================= 新增：动作连续性惩罚 =================
+        for agent, act in actions.items():
+            if act != self.last_actions.get(agent, 0):
+                # 每次切换动作，扣除一点体力分，逼迫其保持动作连贯
+                total_rewards[agent] -= 0.5 
+            self.last_actions[agent] = act
+        # ========================================================
+
         for _ in range(dynamic_frame_skip):
             # 获取最新物理状态
             attacker_state = self.pyb_env._getDroneStateVector(attacker_id)
@@ -361,19 +371,23 @@ class Drone1v1MARLEnv(MultiAgentEnv):
 
                 self.user_input_pos[agent] += vel_world * dt
                 
-                # ================= 修复：高度限制与天花板惩罚 =================
+                # ================= 新增：平滑目标速度 =================
+                VEL_SMOOTH_FACTOR = 0.2 # 速度平滑系数
+                self.current_target_vel[agent] = self.current_target_vel[agent] * (1 - VEL_SMOOTH_FACTOR) + vel_world * VEL_SMOOTH_FACTOR
+                # ======================================================
+
+                # 修复：高度限制与天花板惩罚 
                 if agent == "attacker_0":
-                    # 我方无人机：触碰 10 米天花板时给予持续惩罚，防止利用边界“滑行”
-                    if self.user_input_pos[agent][2] > 10.0:
-                        self.user_input_pos[agent][2] = 10.0
+                    # 我方无人机：触碰天花板时给予持续惩罚，防止利用边界“滑行”
+                    if self.user_input_pos[agent][2] > 15.0:
+                        self.user_input_pos[agent][2] = 15.0
                         total_rewards[agent] -= 0.5 * dt  # 累加高度软惩罚
                     # 正常防钻地（不给惩罚，直接限制）
                     elif self.user_input_pos[agent][2] < 1.0:
                         self.user_input_pos[agent][2] = 1.0
                 else:
                     # 目标机：仅保留原有的物理边界限制，不施加任何额外惩罚
-                    self.user_input_pos[agent][2] = np.clip(self.user_input_pos[agent][2], 1.0, 10.0)
-                # ==========================================================
+                    self.user_input_pos[agent][2] = np.clip(self.user_input_pos[agent][2], 1.0, 15.0)
 
                 # PID 平滑追踪
                 self.current_target_pos[agent] = self.current_target_pos[agent] * (1 - self.SMOOTH_FACTOR) + self.user_input_pos[agent] * self.SMOOTH_FACTOR
@@ -387,7 +401,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                     cur_vel=agent_state[10:13],     
                     cur_ang_vel=agent_state[13:16],
                     target_pos=self.current_target_pos[agent], 
-                    target_vel=vel_world,
+                    target_vel=self.current_target_vel[agent],  #平滑后的速度
                     target_rpy=np.array([0, 0, self.target_yaws[agent]])
                 )
                 rpms[i, :] = rpm
