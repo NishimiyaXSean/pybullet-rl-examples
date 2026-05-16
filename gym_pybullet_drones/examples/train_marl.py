@@ -12,6 +12,7 @@ from ray import tune
 from ray.rllib.algorithms.ppo import PPOConfig
 from ray.tune.registry import register_env
 from ray.rllib.algorithms.callbacks import DefaultCallbacks
+from ray.tune.logger import UnifiedLogger
 
 # 环境代码保存在 marl_env.py 中，类名叫 Drone1v1MARLEnv
 from marl_env import Drone1v1MARLEnv
@@ -96,10 +97,33 @@ if __name__ == "__main__":
         )
     )
 
+    # 获取当前时间
+    current_time = datetime.datetime.now().strftime("%m%d_%H%M")
+    CHECKPOINT_DIR = os.path.abspath(f"./marl_checkpoints/run_{current_time}")
+    LOG_DIR = os.path.abspath(f"./marl_logs/run_{current_time}")
+    os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+    os.makedirs(LOG_DIR, exist_ok=True)
+
+    # 【新增】：创建一个自定义 Logger 创建器
+    def custom_logger_creator(config):
+        # 让 UnifiedLogger 把 TB、JSON 和 CSV 日志全写到我们指定的 LOG_DIR
+        return UnifiedLogger(config, LOG_DIR)
+
     # 6. 构建算法对象
     print("正在构建 RLlib 算法对象，请稍候...")
-    algo = config.build_algo()
+    algo = config.build(logger_creator=custom_logger_creator)
     print(f"TensorBoard 日志正在实时写入：{algo.logdir}")
+
+    '''
+    # 加载旧模型以继续训练
+    OLD_CHECKPOINT = os.path.abspath("./marl_checkpoints/run_0515_1035/checkpoint_best_iter_258" )
+
+    if os.path.exists(OLD_CHECKPOINT):
+        print(f"正在恢复旧模型记忆: {OLD_CHECKPOINT}")
+        algo.restore(OLD_CHECKPOINT)
+    else:
+        print("未发现旧模型，将从随机初始化开始全新训练。")
+    '''
 
     # 7. 开始训练循环
     TRAIN_ITERATIONS = 500
@@ -108,23 +132,6 @@ if __name__ == "__main__":
     # 初始化为 -0.01，这样可以确保第一轮训练（即使成功率是 0%）也能作为保底模型保存下来
     best_success_rate = -0.01  
     best_checkpoint_path = None    
-
-    # 获取当前时间
-    current_time = datetime.datetime.now().strftime("%m%d_%H%M")
-    CHECKPOINT_DIR = f"./marl_checkpoints/run_{current_time}"
-    os.makedirs(CHECKPOINT_DIR, exist_ok=True)
-
-    '''
-    # 加载旧模型以继续训练
-    OLD_CHECKPOINT = os.path.abspath("./marl_checkpoints/run_0513_1713/checkpoint_best_iter_025" )
-
-    if os.path.exists(OLD_CHECKPOINT):
-        print(f"正在恢复旧模型记忆: {OLD_CHECKPOINT}")
-        algo.restore(OLD_CHECKPOINT)
-    else:
-        print("未发现旧模型，将从随机初始化开始全新训练。")
-    '''
-    
 
     print("==================================")
     print("开始多智能体 1v1 空战对抗训练！")
