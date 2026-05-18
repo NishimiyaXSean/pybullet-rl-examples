@@ -73,7 +73,7 @@ if __name__ == "__main__":
         .framework("torch") # 必须指定使用 PyTorch
         .resources(num_gpus=1 if torch.cuda.is_available() else 0)
         .env_runners(
-            num_env_runners=0,
+            num_env_runners=4,
             sample_timeout_s=300,      # 将超时容忍度从默认的 60 秒延长到 5 分钟
             rollout_fragment_length=256 # 细化数据包，避免单次收集太久
             ) 
@@ -100,8 +100,8 @@ if __name__ == "__main__":
         # 5. 神经网络结构 (Net Arch)
         .training(
             model={"fcnet_hiddens": [256, 256, 128], "fcnet_activation": "relu"},
-            train_batch_size=1024,
-            minibatch_size=128,
+            train_batch_size=8192,
+            minibatch_size=1024,
             lr=3e-4,
             entropy_coeff=0.05,
             # 限制价值函数的截断 (Clip Param)

@@ -129,7 +129,8 @@ class Drone1v1MARLEnv(MultiAgentEnv):
 
         # 替换 reset 函数中原本的初始姿态和速度赋值：
         for i, agent in enumerate(self.agents):
-            initial_pos = self.pyb_env._getDroneStateVector(i)[0:3]
+            initial_pos = new_init_xyzs[i]
+            pyb_id = self.pyb_env.DRONE_IDS[i] if hasattr(self.pyb_env, 'DRONE_IDS') else self.pyb_env.drone_ids[i]
             
             # 修复：计算指向原点 (0,0) 的偏航角
             dx = -initial_pos[0]
@@ -142,8 +143,12 @@ class Drone1v1MARLEnv(MultiAgentEnv):
             
             p.resetBasePositionAndOrientation(i, initial_pos, init_quat, physicsClientId=self.pyb_env.CLIENT)
             p.resetBaseVelocity(i, linearVelocity=init_vel, physicsClientId=self.pyb_env.CLIENT)
+        if hasattr(self.pyb_env, '_updateAndStoreKinematicInformation'):
+            self.pyb_env._updateAndStoreKinematicInformation()
+        
         # 初始化时间步与两架飞机的局部追踪变量
-        self.step_counter = 0
+        self.step_counter = 0  # 留着给底层备用
+        self.macro_step = 0    # 真正的宏观决策步数
         self.last_actions = {agent: 0 for agent in self.agents}
     
         # 计算开局时的初始距离 (用于第一帧的奖励计算基准)
@@ -162,11 +167,6 @@ class Drone1v1MARLEnv(MultiAgentEnv):
         self.last_draw_pos = attacker_pos.copy()
         self.last_target_draw_pos = evader_pos.copy()
         self.cam_pos = attacker_pos.copy()
-
-        # 初始化时间步与两架飞机的局部追踪变量
-        self.step_counter = 0           # 留着给底层备用
-        self.macro_step = 0             # 👈 新增：真正的宏观决策步数
-        self.last_actions = {agent: 0 for agent in self.agents}
 
         if self.pyb_env.GUI:
             p.removeAllUserDebugItems(physicsClientId=self.pyb_env.CLIENT) # 清理上一局的残留线条
@@ -340,7 +340,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 if agent not in actions or terminations[agent]: # 如果这架飞机已经判定死亡，则直接跳过
                     continue
 
-                drone_id = 0 if agent == "attacker_0" else 1    
+                pyb_id = self.pyb_env.DRONE_IDS[i] if hasattr(self.pyb_env, 'DRONE_IDS') else self.pyb_env.drone_ids[i]
                 action_int = int(actions[agent])
                 n_x_cmd, n_n_cmd, mu_cmd = self.bfm_action_mapping[action_int]
                 
@@ -425,9 +425,9 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 new_quat = p.getQuaternionFromEuler([mu, new_gamma, new_chi])
                 
                 # 6. 【关键】强制覆写 PyBullet 状态
-                p.resetBasePositionAndOrientation(drone_id, new_pos, new_quat, physicsClientId=self.pyb_env.CLIENT)
+                p.resetBasePositionAndOrientation(pyb_id, new_pos, new_quat, physicsClientId=self.pyb_env.CLIENT)
                 # 必须同时覆写速度，否则 observation 读取不到正确的线速度
-                p.resetBaseVelocity(drone_id, linearVelocity=new_vel, physicsClientId=self.pyb_env.CLIENT)
+                p.resetBaseVelocity(pyb_id, linearVelocity=new_vel, physicsClientId=self.pyb_env.CLIENT)
 
                 # 高度限制与天花板惩罚 
                 if agent == "attacker_0":
