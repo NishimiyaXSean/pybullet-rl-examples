@@ -18,7 +18,16 @@ from ray.rllib.algorithms.callbacks import DefaultCallbacks
 from marl_env import Drone1v1MARLEnv
 
 def env_creator(config):
-    return Drone1v1MARLEnv(gui=False)
+    # 1. 实例化环境
+    env = Drone1v1MARLEnv(gui=False)
+
+    # 2. 从 RLlib 的配置字典中读取性能系数（如果存在的话）
+    if "evader_speed_coeff" in config:
+        env.EVADER_SPEED_COEFF = config["evader_speed_coeff"]
+    if "evader_g_coeff" in config:
+        env.EVADER_G_COEFF = config["evader_g_coeff"]
+        
+    return env
 
 class DroneMetricsCallback(DefaultCallbacks):
     def on_episode_end(self, *, worker, base_env, policies, episode, env_index, **kwargs):
@@ -63,7 +72,11 @@ if __name__ == "__main__":
         .environment(env=env_name)
         .framework("torch") # 必须指定使用 PyTorch
         .resources(num_gpus=1 if torch.cuda.is_available() else 0)
-        .env_runners(num_env_runners=4) # 开启并行的 CPU 核心来跑环境收集数据
+        .env_runners(
+            num_env_runners=0,
+            sample_timeout_s=300,      # 将超时容忍度从默认的 60 秒延长到 5 分钟
+            rollout_fragment_length=256 # 细化数据包，避免单次收集太久
+            ) 
         .callbacks(DroneMetricsCallback)
         
         # 强制关闭尚不成熟的新 API 栈
@@ -87,8 +100,8 @@ if __name__ == "__main__":
         # 5. 神经网络结构 (Net Arch)
         .training(
             model={"fcnet_hiddens": [256, 256, 128], "fcnet_activation": "relu"},
-            train_batch_size=4096,
-            minibatch_size=256,
+            train_batch_size=1024,
+            minibatch_size=128,
             lr=3e-4,
             entropy_coeff=0.05,
             # 限制价值函数的截断 (Clip Param)

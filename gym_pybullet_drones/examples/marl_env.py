@@ -50,6 +50,10 @@ class Drone1v1MARLEnv(MultiAgentEnv):
         self.STALL_SPEED = 60.0   # 基础失速速度
         self.g = 9.81             # 重力加速度
 
+        # --- 目标机(Evader)性能缩放系数 ---
+        self.EVADER_SPEED_COEFF = 0.625  # 速度系数 (400 * 0.625 = 250 m/s)
+        self.EVADER_G_COEFF = 0.555      # 过载系数 (9.0 * 0.555 ≈ 5.0 G)
+
         # BFM 动作库: {动作编号 : (切向过载 n_x, 法向过载 n_n, 滚转角 mu)}
         self.bfm_action_mapping = {
             0:  ( 0,  1,  0.0),            # a1: 匀速直飞
@@ -333,18 +337,23 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 action_int = int(actions[agent])
                 n_x_cmd, n_n_cmd, mu_cmd = self.bfm_action_mapping[action_int]
                 
-                # ================= 新增：近地动作强制覆写 (GPWS) =================
+                current_max_speed = self.MAX_SPEED
+                current_max_g = self.MAX_G
+
+                if agent == "evader_0":
+                    current_max_speed = self.MAX_SPEED * self.EVADER_SPEED_COEFF
+                    current_max_g = self.MAX_G * self.EVADER_G_COEFF
+
+                # 近地动作强制覆写 (GPWS)
+
                 agent_current_z = attacker_state[2] if i == 0 else evader_state[2]
                 
                 # 如果高度低于 300 米，且动作包含向下的法向过载 (俯冲/下洗)
                 if agent_current_z < 300.0 and n_n_cmd < 0:
-                    # 强制将机动改为“跃升” (拉起机头保命)
-                    n_n_cmd = 8.0 
+                    # 强制将机动改为“跃升” 
+                    n_n_cmd = current_max_g
                     mu_cmd = 0.0 # 改平滚转角
-                    
-                    # 给予一个额外的惩罚
-                    total_rewards[agent] -= 2.0 * dt
-                # ===============================================================
+                    total_rewards[agent] -= 2.0 * dt  # 给予一个额外的惩罚
 
                 # 1. 提取当前物理状态
                 state = attacker_state if i == 0 else evader_state
@@ -354,16 +363,6 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 # 计算当前速度标量和航迹角
                 V = np.linalg.norm(vel)
                 if V < 1e-3: V = 1e-3  # 防止除以 0
-
-                # 默认是攻击机性能
-                current_max_speed = self.MAX_SPEED
-                current_max_g = self.MAX_G
-                
-                if agent == "evader_0":
-                    # 削弱靶机性能：最大速度 250 m/s，最大过载 5.0 G
-                    current_max_speed = 250.0 
-                    current_max_g = 5.0
-
 
                 # ================= 核心：包线与动力学限制 =================
                 # A. 升力限制 (低速时无法拉出大过载，升力与速度的平方成正比)
@@ -659,8 +658,8 @@ class Drone1v1MARLEnv(MultiAgentEnv):
 
                 # ================= 新增：目标机软地板警告 =================
                 reward_E_ground_warning = 0.0
-                if evader_pos[2] < 300.0:
-                    reward_E_ground_warning = -(300.0 - evader_pos[2]) * 0.5 * dt
+                if new_evader_pos[2] < 300.0:
+                    reward_E_ground_warning = -(300.0 - new_evader_pos[2]) * 0.5 * dt
                 # ========================================================
                         
                 # 单帧结算
