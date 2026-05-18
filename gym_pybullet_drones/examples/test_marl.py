@@ -14,7 +14,7 @@ from ray.tune.registry import register_env
 
 from marl_env import Drone1v1MARLEnv
 
-RELATIVE_PATH = "./marl_checkpoints/run_0516_1611/checkpoint_best_iter_058" 
+RELATIVE_PATH = "./marl_checkpoints/run_0518_1932/checkpoint_best_iter_055" 
 CHECKPOINT_PATH = os.path.abspath(RELATIVE_PATH)
 
 def env_creator(config):
@@ -114,27 +114,24 @@ if __name__ == "__main__":
             
             while not (terminated["__all__"] or truncated["__all__"]):
                 # 双方大脑独立思考
+                actions = {}
+
                 # 主机根据它的观测输出动作
-                action_A = algo.compute_single_action(
-                    observation=obs["attacker_0"],
-                    policy_id="policy_attacker",
-                    explore=False # 测试时关闭随机探索
-                )
+                if "attacker_0" in obs:
+                    actions["attacker_0"] = algo.compute_single_action(
+                        observation=obs["attacker_0"],
+                        policy_id="policy_attacker",
+                        explore=False # 测试时关闭随机探索
+                    )
+                if "evader_0" in obs:
+                    actions["evader_0"] = algo.compute_single_action(
+                        observation=obs["evader_0"],
+                        policy_id="policy_evader",
+                        explore=False
+                    )
                 
-                # 目标机根据它的观测输出动作
-                action_E = algo.compute_single_action(
-                    observation=obs["evader_0"],
-                    policy_id="policy_evader",
-                    explore=False
-                )
-                
-                actions = {
-                    "attacker_0": action_A,
-                    "evader_0": action_E
-                }
-                
-                # 执行物理步进
-                obs, rewards, terminated, truncated, infos = env.step(actions)
+                # 执行物理步进    
+                obs, rewards, terminated, truncated, infos = env.step(actions)      
                 
                 # 累加奖励
                 ep_reward_A += rewards.get("attacker_0", 0)
@@ -149,9 +146,6 @@ if __name__ == "__main__":
                 history_pos_A.append(pos_A)
                 history_pos_E.append(pos_E)
                 history_dist.append(dist)
-
-                # 保持 1:1 真实物理频率渲染
-                time.sleep(0.02) 
 
                 # 检测 ESC 退出
                 keys = p.getKeyboardEvents()
@@ -181,23 +175,27 @@ if __name__ == "__main__":
             # 图表 1：相对距离曲线
             ax1 = fig.add_subplot(1, 2, 1)
             ax1.plot(history_dist, label='Relative Distance', color='blue', linewidth=2)
-            ax1.axhline(y=1.0, color='orange', linestyle='--', label='Fuze Trigger Radius (1.0m)')
-            ax1.axhline(y=0.15, color='red', linestyle='--', label='Kinetic Hit (0.15m)')
+            ax1.axhline(y=150.0, color='orange', linestyle='--', label='Fuze Trigger Radius (150m)')
+            ax1.axhline(y=50.0, color='red', linestyle='--', label='Kinetic Hit (50m)')
             ax1.set_title("Interception Distance over Time")
-            ax1.set_xlabel("Time Steps (0.2s / step)")
+            ax1.set_xlabel("Time Steps")
             ax1.set_ylabel("Distance (m)")
             ax1.grid(True, alpha=0.5)
             ax1.legend()
 
             # 图表 2：3D 狗斗轨迹
             ax2 = fig.add_subplot(1, 2, 2, projection='3d')
-            ax2.plot(arr_pos_A[:, 0], arr_pos_A[:, 1], arr_pos_A[:, 2], label='Attacker (CF2X)', color='red', linewidth=2)
+            ax2.plot(arr_pos_A[:, 0], arr_pos_A[:, 1], arr_pos_A[:, 2], label='Attacker', color='red', linewidth=2)
             ax2.plot(arr_pos_E[:, 0], arr_pos_E[:, 1], arr_pos_E[:, 2], label='Evader (Target)', color='orange', linewidth=2)
             
             # 标记起点和终点
             ax2.scatter(arr_pos_A[0, 0], arr_pos_A[0, 1], arr_pos_A[0, 2], color='darkred', marker='o', s=50, label='Start A')
             ax2.scatter(arr_pos_E[0, 0], arr_pos_E[0, 1], arr_pos_E[0, 2], color='goldenrod', marker='o', s=50, label='Start E')
-            ax2.scatter(arr_pos_A[-1, 0], arr_pos_A[-1, 1], arr_pos_A[-1, 2], color='black', marker='x', s=100, label='End Point')
+            # 绘制相撞/终点标识
+            if reason == "success":
+                ax2.scatter(arr_pos_A[-1, 0], arr_pos_A[-1, 1], arr_pos_A[-1, 2], color='red', marker='*', s=300, label='KILL POINT')
+            else:
+                ax2.scatter(arr_pos_A[-1, 0], arr_pos_A[-1, 1], arr_pos_A[-1, 2], color='black', marker='x', s=100, label='End Point')
 
             ax2.set_title("3D Dogfight Trajectory")
             ax2.set_xlabel("X (m)")
@@ -206,7 +204,7 @@ if __name__ == "__main__":
             ax2.legend()
 
             plt.tight_layout()
-            # 阻塞式显示：看完这张图并关闭窗口后，才会开始下一局演习
+            print("请查看弹出的 3D 轨迹分析图。关闭图表窗口后，将自动开始下一局演习。")
             plt.show()
 
     ray.shutdown()
