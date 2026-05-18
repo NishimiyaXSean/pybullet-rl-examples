@@ -2,6 +2,7 @@ import os
 import shutil  # 新增：用于删除旧的最优模型文件夹
 # 解决 Windows 下 NumPy 和 PyTorch 的 OpenMP 冲突
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
+os.environ['TUNE_RESULT_DIR'] = os.path.abspath("./marl_logs")
 
 import torch
 import numpy as np
@@ -12,7 +13,6 @@ from ray import tune
 from ray.rllib.algorithms.ppo import PPOConfig
 from ray.tune.registry import register_env
 from ray.rllib.algorithms.callbacks import DefaultCallbacks
-from ray.tune.logger import UnifiedLogger
 
 # 环境代码保存在 marl_env.py 中，类名叫 Drone1v1MARLEnv
 from marl_env import Drone1v1MARLEnv
@@ -104,15 +104,15 @@ if __name__ == "__main__":
     os.makedirs(CHECKPOINT_DIR, exist_ok=True)
     os.makedirs(LOG_DIR, exist_ok=True)
 
-    # 【新增】：创建一个自定义 Logger 创建器
-    def custom_logger_creator(config):
-        # 让 UnifiedLogger 把 TB、JSON 和 CSV 日志全写到我们指定的 LOG_DIR
-        return UnifiedLogger(config, LOG_DIR)
-
     # 6. 构建算法对象
     print("正在构建 RLlib 算法对象，请稍候...")
-    algo = config.build(logger_creator=custom_logger_creator)
-    print(f"TensorBoard 日志正在实时写入：{algo.logdir}")
+    algo = config.build()
+
+    print("\n" + "="*45)
+    print("TensorBoard 日志准备就绪！")
+    print("请新开一个终端（Terminal），运行以下命令查看实时曲线：")
+    print(f"tensorboard --logdir=\"{algo.logdir}\"")
+    print("="*45 + "\n")
 
     '''
     # 加载旧模型以继续训练
