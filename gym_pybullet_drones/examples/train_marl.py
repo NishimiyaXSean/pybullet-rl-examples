@@ -2,6 +2,7 @@ import os
 import shutil  # 新增：用于删除旧的最优模型文件夹
 # 解决 Windows 下 NumPy 和 PyTorch 的 OpenMP 冲突
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
+os.environ['TUNE_RESULT_DIR'] = os.path.abspath("./marl_logs")
 
 import torch
 import numpy as np
@@ -17,7 +18,16 @@ from ray.rllib.algorithms.callbacks import DefaultCallbacks
 from marl_env import Drone1v1MARLEnv
 
 def env_creator(config):
-    return Drone1v1MARLEnv(gui=False)
+    # 1. 实例化环境
+    env = Drone1v1MARLEnv(gui=False)
+
+    # 2. 从 RLlib 的配置字典中读取性能系数（如果存在的话）
+    if "evader_speed_coeff" in config:
+        env.EVADER_SPEED_COEFF = config["evader_speed_coeff"]
+    if "evader_g_coeff" in config:
+        env.EVADER_G_COEFF = config["evader_g_coeff"]
+        
+    return env
 
 class DroneMetricsCallback(DefaultCallbacks):
     def on_episode_end(self, *, worker, base_env, policies, episode, env_index, **kwargs):
@@ -62,7 +72,11 @@ if __name__ == "__main__":
         .environment(env=env_name)
         .framework("torch") # 必须指定使用 PyTorch
         .resources(num_gpus=1 if torch.cuda.is_available() else 0)
-        .env_runners(num_env_runners=4) # 开启并行的 CPU 核心来跑环境收集数据
+        .env_runners(
+            num_env_runners=4,
+            sample_timeout_s=300,      # 将超时容忍度从默认的 60 秒延长到 5 分钟
+            rollout_fragment_length=256 # 细化数据包，避免单次收集太久
+            ) 
         .callbacks(DroneMetricsCallback)
         
         # 强制关闭尚不成熟的新 API 栈
@@ -86,8 +100,8 @@ if __name__ == "__main__":
         # 5. 神经网络结构 (Net Arch)
         .training(
             model={"fcnet_hiddens": [256, 256, 128], "fcnet_activation": "relu"},
-            train_batch_size=4096,
-            minibatch_size=256,
+            train_batch_size=8192,
+            minibatch_size=1024,
             lr=3e-4,
             entropy_coeff=0.05,
             # 限制价值函数的截断 (Clip Param)
@@ -96,10 +110,33 @@ if __name__ == "__main__":
         )
     )
 
+    # 获取当前时间
+    current_time = datetime.datetime.now().strftime("%m%d_%H%M")
+    CHECKPOINT_DIR = os.path.abspath(f"./marl_checkpoints/run_{current_time}")
+    LOG_DIR = os.path.abspath(f"./marl_logs/run_{current_time}")
+    os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+    os.makedirs(LOG_DIR, exist_ok=True)
+
     # 6. 构建算法对象
     print("正在构建 RLlib 算法对象，请稍候...")
-    algo = config.build_algo()
-    print(f"TensorBoard 日志正在实时写入：{algo.logdir}")
+    algo = config.build()
+
+    print("\n" + "="*45)
+    print("TensorBoard 日志准备就绪！")
+    print("请新开一个终端（Terminal），运行以下命令查看实时曲线：")
+    print(f"tensorboard --logdir=\"{algo.logdir}\"")
+    print("="*45 + "\n")
+
+    '''
+    # 加载旧模型以继续训练
+    OLD_CHECKPOINT = os.path.abspath("./marl_checkpoints/run_0515_1035/checkpoint_best_iter_258" )
+
+    if os.path.exists(OLD_CHECKPOINT):
+        print(f"正在恢复旧模型记忆: {OLD_CHECKPOINT}")
+        algo.restore(OLD_CHECKPOINT)
+    else:
+        print("未发现旧模型，将从随机初始化开始全新训练。")
+    '''
 
     # 7. 开始训练循环
     TRAIN_ITERATIONS = 500
@@ -108,23 +145,6 @@ if __name__ == "__main__":
     # 初始化为 -0.01，这样可以确保第一轮训练（即使成功率是 0%）也能作为保底模型保存下来
     best_success_rate = -0.01  
     best_checkpoint_path = None    
-
-    # 获取当前时间
-    current_time = datetime.datetime.now().strftime("%m%d_%H%M")
-    CHECKPOINT_DIR = f"./marl_checkpoints/run_{current_time}"
-    os.makedirs(CHECKPOINT_DIR, exist_ok=True)
-
-    '''
-    # 加载旧模型以继续训练
-    OLD_CHECKPOINT = os.path.abspath("./marl_checkpoints/run_0513_1713/checkpoint_best_iter_025" )
-
-    if os.path.exists(OLD_CHECKPOINT):
-        print(f"正在恢复旧模型记忆: {OLD_CHECKPOINT}")
-        algo.restore(OLD_CHECKPOINT)
-    else:
-        print("未发现旧模型，将从随机初始化开始全新训练。")
-    '''
-    
 
     print("==================================")
     print("开始多智能体 1v1 空战对抗训练！")
