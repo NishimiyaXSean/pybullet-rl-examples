@@ -505,22 +505,46 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                     self.hud_text_id = p.addUserDebugText(hud_text, [0, 0, 0.8], textColorRGB=[0, 0, 0], textSize=1.5, parentObjectUniqueId=drone_pyb_id, physicsClientId=self.pyb_env.CLIENT)
                 else:
                     self.hud_text_id = p.addUserDebugText(hud_text, [0, 0, 0.8], textColorRGB=[0, 0, 0], textSize=1.5, parentObjectUniqueId=drone_pyb_id, replaceItemUniqueId=self.hud_text_id, physicsClientId=self.pyb_env.CLIENT)
+                
+                # 视线连线
+                p.addUserDebugLine(cur_attacker_pos, cur_evader_pos, [0, 1, 1], 1.5, 1.5 / self.CTRL_FREQ, physicsClientId=self.pyb_env.CLIENT)
+                
+                # 计算两架飞机的空间中点 (Midpoint)
+                mid_pos = (cur_attacker_pos + cur_evader_pos) / 2.0
 
                 # 相机跟随逻辑
-                self.cam_pos = self.cam_pos * 0.95 + cur_attacker_pos * 0.05
+                self.cam_pos = self.cam_pos * 0.9 + cur_attacker_pos * 0.1
                 attacker_rpy = self.pyb_env._getDroneStateVector(attacker_id)[7:10]
                 smooth_yaw = np.degrees(attacker_rpy[2]) # 取 Yaw 角
 
+                # ================= 重构的大尺度运镜模式 =================
                 if self.camera_mode == 1:
-                    p.resetDebugVisualizerCamera(2.0, smooth_yaw - 90, -20, self.cam_pos, physicsClientId=self.pyb_env.CLIENT)
+                    # Mode 1: 经典第三人称尾随视角 (类似皇牌空战)
+                    # 距离从 2.0 米拉大到 100.0 米，以容纳战斗机的庞大机身和高速运动
+                    p.resetDebugVisualizerCamera(100.0, smooth_yaw - 90, -10, self.cam_pos, physicsClientId=self.pyb_env.CLIENT)
+                
                 elif self.camera_mode == 2:
-                    p.resetDebugVisualizerCamera(12.0, 0, -89.9, [0, 0, 1.0], physicsClientId=self.pyb_env.CLIENT)
+                    # Mode 2: 战术俯视地图 (Top-down Tactical Map)
+                    # 追踪两机中心点，相机高度(距离)动态适应两机的相对距离
+                    tactical_dist = max(4000.0, dist_cam * 1.5) 
+                    p.resetDebugVisualizerCamera(tactical_dist, 0, -89.9, mid_pos, physicsClientId=self.pyb_env.CLIENT)
+                
                 elif self.camera_mode == 3:
-                    p.resetDebugVisualizerCamera(max(2.0, dist_cam * 0.8), drone_angle - 45, -20, cur_evader_pos, physicsClientId=self.pyb_env.CLIENT)
+                    # Mode 3: 动态狗斗视角 (Dynamic Dogfight / Over-the-shoulder)
+                    # 相机盯着两机的中心点，但视角方向试图把目标机和主机都纳入画面
+                    view_yaw = np.degrees(np.arctan2(cur_evader_pos[1] - cur_attacker_pos[1], cur_evader_pos[0] - cur_attacker_pos[0]))
+                    dynamic_dist = np.clip(dist_cam * 1.2, 150.0, 4000.0) # 限制最近和最远距离
+                    p.resetDebugVisualizerCamera(dynamic_dist, view_yaw - 90, -15, mid_pos, physicsClientId=self.pyb_env.CLIENT)
+                
                 elif self.camera_mode == 4:
-                    p.resetDebugVisualizerCamera(6.0, 45, -30, cur_evader_pos, physicsClientId=self.pyb_env.CLIENT)
+                    # Mode 4: 目标锁定抵近视角 (Target Tracking)
+                    # 镜头死死锁住目标机，距离设为 200 米，方便看清它怎么做机动规避
+                    p.resetDebugVisualizerCamera(200.0, drone_angle + 45, -20, cur_evader_pos, physicsClientId=self.pyb_env.CLIENT)
+                
                 elif self.camera_mode == 5:
-                    p.resetDebugVisualizerCamera(15.0, 90, -5, [0, 0, 3.0], physicsClientId=self.pyb_env.CLIENT)
+                    # Mode 5: 全局大尺度远景
+                    # 强制锁定在极高的高空，纵览整个交战空域 (8km x 8km)
+                    p.resetDebugVisualizerCamera(10000.0, 45, -30, [0, 0, 3000.0], physicsClientId=self.pyb_env.CLIENT)
 
             # 在微小帧内，重新计算战术几何 (ATA, AA, HCA)
             # 1. 从当前帧的状态中提取双方的真实物理四元数
