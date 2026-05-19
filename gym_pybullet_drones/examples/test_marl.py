@@ -14,7 +14,7 @@ from ray.tune.registry import register_env
 
 from marl_env import Drone1v1MARLEnv
 
-RELATIVE_PATH = "./marl_checkpoints/run_0518_1932/checkpoint_best_iter_090" 
+RELATIVE_PATH = "./marl_runs/run_0519_1631/checkpoints/checkpoint_final" 
 CHECKPOINT_PATH = os.path.abspath(RELATIVE_PATH)
 
 def env_creator(config):
@@ -37,7 +37,7 @@ if __name__ == "__main__":
     # "STRESS_TEST" -> 后台极速运行 100 局，统计真实胜率
     # "VISUAL_TEST" -> 带有 3D 界面和图表分析的单局观看模式
     # ==========================================
-    RUN_MODE = "STRESS_TEST" 
+    RUN_MODE = "VISUAL_TEST" 
 
     if RUN_MODE == "STRESS_TEST":
         print("==================================")

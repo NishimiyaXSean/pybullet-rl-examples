@@ -153,7 +153,7 @@ if __name__ == "__main__":
     print("==================================")
 
     try: 
-        for i in range(TRAIN_ITERATIONS):
+        for i in range(TRAIN_ITERATIONS): # 每一次迭代为train_batch_size = 8192步
             # step() 会让所有 worker 跑环境，收集数据，更新神经网络，然后返回统计信息
             result = algo.train()
 
@@ -183,7 +183,6 @@ if __name__ == "__main__":
                   f"总训练步数: {total_steps}")
             
             # 写入宏观平均曲线 (横坐标为 Iteration)
-            # 参数格式: (图表名称, 具体数值, 横坐标迭代步数)
             tb_writer.add_scalar("1_Rewards/Attacker", reward_A, i+1)
             tb_writer.add_scalar("1_Rewards/Evader", reward_E, i+1)
             

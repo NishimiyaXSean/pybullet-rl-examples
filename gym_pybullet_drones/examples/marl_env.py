@@ -346,14 +346,17 @@ class Drone1v1MARLEnv(MultiAgentEnv):
 
         self.macro_step += 1 # 新增：每次 AI 下达指令，宏观步数推进 1 步
 
-        for _ in range(dynamic_frame_skip):
-            # 获取最新物理状态
-            attacker_state = self.pyb_env._getDroneStateVector(attacker_id)
-            evader_state = self.pyb_env._getDroneStateVector(evader_id)
-            
-            attacker_pos = attacker_state[0:3]
-            evader_pos = evader_state[0:3]
-            dist = np.linalg.norm(attacker_pos - evader_pos)
+        # ================== 新增：绝对信任的本地物理账本 ==================
+        # 彻底抛弃每帧从 PyBullet 读取速度的逻辑，防止无人机的空气阻力污染数据！
+        trusted_states = {
+            "attacker_0": {"pos": attacker_state_init[0:3].copy(), "vel": attacker_state_init[10:13].copy()},
+            "evader_0":   {"pos": evader_state_init[0:3].copy(),   "vel": evader_state_init[10:13].copy()}
+        }
+        # ==================================================================
+
+        for _ in range(dynamic_frame_skip):           
+            self.pyb_env.step(np.zeros((2, 4)))
+            self.step_counter += 1
             
             for i, agent in enumerate(["attacker_0", "evader_0"]):
                 if agent not in actions or terminations[agent]: # 如果这架飞机已经判定死亡，则直接跳过
@@ -370,27 +373,22 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                     current_max_speed = self.MAX_SPEED * self.EVADER_SPEED_COEFF
                     current_max_g = self.MAX_G * self.EVADER_G_COEFF
 
-                # 近地动作强制覆写 (GPWS)
+                # 干净账本读取状态 
+                pos = trusted_states[agent]["pos"]
+                vel = trusted_states[agent]["vel"]
 
-                agent_current_z = attacker_state[2] if i == 0 else evader_state[2]
-                
-                # 如果高度低于 300 米，且动作包含向下的法向过载 (俯冲/下洗)
+                agent_current_z = pos[2]
+
+                # GPWS 近地警告覆盖
                 if agent_current_z < 300.0 and n_n_cmd < 0:
-                    # 强制将机动改为“跃升” 
                     n_n_cmd = current_max_g
                     mu_cmd = 0.0 # 改平滚转角
-                    total_rewards[agent] -= 2.0 * dt  # 给予一个额外的惩罚
+                    total_rewards[agent] -= 2.0 * dt
 
-                # 1. 提取当前物理状态
-                state = attacker_state if i == 0 else evader_state
-                pos = state[0:3]
-                vel = state[10:13]
-                
-                # 计算当前速度标量和航迹角
                 V = np.linalg.norm(vel)
                 if V < 1e-3: V = 1e-3  # 防止除以 0
 
-                # ================= 核心：包线与动力学限制 =================
+                # 包线限制 
                 # A. 升力限制 (低速时无法拉出大过载，升力与速度的平方成正比)
                 # 抛物线方程：当前可用最大过载 = (当前速度 / 角速度)^2 * 最大结构过载
                 available_n_lift = ((V / self.CORNER_SPEED) ** 2) * current_max_g
@@ -409,7 +407,6 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                     n_x = 0.0  # 超过极速无法继续加速 (阻力壁垒)
                 elif V < self.STALL_SPEED and n_x_cmd < 0:
                     n_x = 0.0  # 接近失速时无法继续减速
-                # ==========================================================
 
                 # 新增 MARL 学习优化：惩罚“违背物理定律”的意图
                 # 如果 AI 给出的指令超出了物理极限被强制裁剪了，必须扣除奖励，逼迫神经网络学习并记忆这架飞机的包线，而不是瞎推杆。
@@ -426,12 +423,12 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 gamma_dot = (self.g / V) * (n_n * np.cos(mu) - np.cos(gamma))
                 chi_dot = (self.g * n_n * np.sin(mu)) / (V * cos_gamma)
                 
-                # 3. 欧拉积分更新状态
+                # 欧拉积分更新状态
                 new_V = V + V_dot * dt
                 new_gamma = gamma + gamma_dot * dt
                 new_chi = chi + chi_dot * dt
                 
-                # 4. 将极坐标下的速度转换回 3D 笛卡尔坐标系
+                # 将极坐标下的速度转换回 3D 笛卡尔坐标系
                 new_vel = np.array([
                     new_V * np.cos(new_gamma) * np.cos(new_chi),
                     new_V * np.cos(new_gamma) * np.sin(new_chi),
@@ -440,13 +437,8 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 
                 new_pos = pos + new_vel * dt
                 
-                # 5. 计算新姿态四元数 (根据速度方向和滚转角对齐机头)
+                # 计算新姿态四元数 (根据速度方向和滚转角对齐机头)
                 new_quat = p.getQuaternionFromEuler([mu, new_gamma, new_chi])
-                
-                # 6. 【关键】强制覆写 PyBullet 状态
-                p.resetBasePositionAndOrientation(pyb_id, new_pos, new_quat, physicsClientId=self.pyb_env.CLIENT)
-                # 必须同时覆写速度，否则 observation 读取不到正确的线速度
-                p.resetBaseVelocity(pyb_id, linearVelocity=new_vel, physicsClientId=self.pyb_env.CLIENT)
 
                 # 高度限制与天花板惩罚 
                 if agent == "attacker_0":
@@ -460,12 +452,20 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 else:
                     # 目标机：仅保留原有的物理边界限制，不施加任何额外惩罚
                     new_pos[2] = np.clip(new_pos[2], 1.0, 15000.0)
-            
-            # 步进物理环境时钟 (可以传入 0 偏置，或者直接调用 stepSimulation)
-            self.pyb_env.step(np.zeros((2, 4)))
-            self.step_counter += 1
 
-            # 在微小帧推演后，立刻提取这一瞬间的最新物理状态
+                # ================= 核心修复：更新本地账本并强制洗白 PyBullet =================
+                trusted_states[agent]["pos"] = new_pos
+                trusted_states[agent]["vel"] = new_vel
+
+                # 强行把洗干净的数据覆盖回被空气阻力弄脏的 PyBullet
+                p.resetBasePositionAndOrientation(pyb_id, new_pos, new_quat, physicsClientId=self.pyb_env.CLIENT)
+                p.resetBaseVelocity(pyb_id, linearVelocity=new_vel, physicsClientId=self.pyb_env.CLIENT)
+
+            # 更新 gym-pybullet-drones 的内置缓存，保证底层 Observation 读取正确
+            if hasattr(self.pyb_env, '_updateAndStoreKinematicInformation'):
+                self.pyb_env._updateAndStoreKinematicInformation()
+
+            # 重新提取一次绝对干净的物理状态，用于下方的距离、几何计算和画图
             new_attacker_state = self.pyb_env._getDroneStateVector(attacker_id)
             new_evader_state = self.pyb_env._getDroneStateVector(evader_id)
             
@@ -667,7 +667,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
 
             # [角色 2] 目标机 (Evader) 奖励结算
             if "evader_0" in actions and not terminations["evader_0"]:
-                WARNING_RADIUS = 3000.0  # 告警半径设置
+                WARNING_RADIUS = 300.0  # 告警半径设置
                 
                 reward_E_escape = 0.0
                 reward_E_jinking = 0.0
