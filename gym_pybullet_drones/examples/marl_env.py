@@ -141,8 +141,9 @@ class Drone1v1MARLEnv(MultiAgentEnv):
             init_vel = [initial_speed * np.cos(yaw), initial_speed * np.sin(yaw), 0.0]
             init_quat = p.getQuaternionFromEuler([0, 0, yaw])
             
-            p.resetBasePositionAndOrientation(i, initial_pos, init_quat, physicsClientId=self.pyb_env.CLIENT)
-            p.resetBaseVelocity(i, linearVelocity=init_vel, physicsClientId=self.pyb_env.CLIENT)
+            p.resetBasePositionAndOrientation(pyb_id, initial_pos, init_quat, physicsClientId=self.pyb_env.CLIENT)
+            p.resetBaseVelocity(pyb_id, linearVelocity=init_vel, physicsClientId=self.pyb_env.CLIENT)
+
         if hasattr(self.pyb_env, '_updateAndStoreKinematicInformation'):
             self.pyb_env._updateAndStoreKinematicInformation()
         
