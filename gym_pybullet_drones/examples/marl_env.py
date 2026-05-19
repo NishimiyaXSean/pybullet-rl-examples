@@ -605,7 +605,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
 
             # [角色 1] 攻击机 (Attacker) 奖励结算
             if "attacker_0" in actions and not terminations["attacker_0"]:
-                TERMINAL_RADIUS = 3.0  # 定义末端冲刺阶段的判定半径 (可调参，建议 3.0~4.0 米)
+                TERMINAL_RADIUS = 500.0  # 定义末端冲刺阶段的判定半径
 
                 # 计算双方的高度差 (Z轴距离)
                 dz = new_attacker_pos[2] - new_evader_pos[2]
@@ -613,6 +613,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 # 1. 靠近奖励 (全局生效：缩短距离加分，被拉开扣分)
                 reward_A_progress = -micro_delta_dist * 20.0 
                 reward_A_progress = np.clip(reward_A_progress, -100.0, 100.0)
+                reward_A_distance_penalty = - (new_dist / 1000.0) * 1.5 * dt  # 绝对距离势能惩罚
 
                 # 2. 时间惩罚 (全局生效：逼迫速战速决)
                 reward_A_time = -0.1 * dt
@@ -643,9 +644,9 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                     
                     # ================= 修改：引入水平冲刺系数 =================
                     # 避免主机在最后一刻从天顶垂直“砸”向目标。
-                    # 只有当高度差极小 (比如小于 1.5 米) 时，才给予 100% 的速度冲刺奖励。
+                    # 只有当高度差极小时，才给予 100% 的速度冲刺奖励。
                     # 高度差越大，冲刺奖励的折扣越狠。
-                    z_alignment_factor = np.clip(1.5 - abs(dz), 0.0, 1.0)
+                    z_alignment_factor = np.clip(200 - abs(dz), 0.0, 1.0)
                     reward_A_ramming = vel_norm * 5.0 * dt * z_alignment_factor
                     # ========================================================
                 else:
@@ -655,11 +656,11 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                     if cos_ata_attacker > 0 and cos_aa_attacker > 0:
                         # 组合奖励：越接近完美的尾随瞄准 (两者皆趋近于 1)，得分呈指数级上升
                         advantage_score = (cos_ata_attacker * cos_aa_attacker) ** 2
-                        reward_A_tracking = advantage_score * 5.0 * dt
+                        reward_A_tracking = advantage_score * 0.5 * dt
                     else:
                         # 如果不在优势阵位，给予轻微的“脱靶惩罚”，逼迫其进行机动
                         # 惩罚力度与机头偏离程度成正比
-                        reward_A_tracking = -(1.0 - cos_ata_attacker) * 1.0 * dt
+                        reward_A_tracking = -(1.0 - cos_ata_attacker) * 2.0 * dt
                 
                 # 单帧结算
                 total_rewards["attacker_0"] += (reward_A_progress + reward_A_tracking + reward_A_time + reward_A_ramming + reward_A_z_penalty + reward_A_ground_warning)
@@ -723,8 +724,8 @@ class Drone1v1MARLEnv(MultiAgentEnv):
 
             # 1. 动能撞击 / 击杀成功
             if new_dist < 50.0 and self.macro_step > 2: # 增加暖机帧保护
-                if not terminations["attacker_0"]: total_rewards["attacker_0"] += 300.0
-                if not terminations["evader_0"]: total_rewards["evader_0"] -= 300.0
+                if not terminations["attacker_0"]: total_rewards["attacker_0"] += 5000.0
+                if not terminations["evader_0"]: total_rewards["evader_0"] -= 5000.0
                 terminations["attacker_0"] = True
                 terminations["evader_0"] = True
 
@@ -740,9 +741,9 @@ class Drone1v1MARLEnv(MultiAgentEnv):
             elif new_dist < self.cpa_radius and (new_dist - current_micro_dist) > 0:
                 miss_distance = current_micro_dist # 取上一微小帧的极小值
                 
-                # 根据脱靶量计算梯度得分：基础分50 + 250 * (1 - (脱靶量 - 50.0) / 杀伤区间)
+                # 根据脱靶量计算梯度得分：基础分1000 + 4000 * (1 - (脱靶量 - 50.0) / 杀伤区间)
                 score_ratio = 1.0 - ((miss_distance - 50.0) / (self.cpa_radius - 50.0))
-                reward_terminal = 50.0 + 250.0 * score_ratio
+                reward_terminal = 1000.0 + 4000.0 * score_ratio
                 
                 # 双方进行分数结算 (零和博弈)
                 if "attacker_0" in total_rewards and not terminations["attacker_0"]: total_rewards["attacker_0"] += reward_terminal
@@ -782,6 +783,14 @@ class Drone1v1MARLEnv(MultiAgentEnv):
         if (self.step_counter / self.CTRL_FREQ) > self.EPISODE_LEN_SEC:
             for agent in self.agents:
                 truncations[agent] = True
+
+            # 如果演习结束，且攻击机既没有坠毁也没有击杀（即苟活到了最后），给予巨额惩罚
+            if not terminations.get("attacker_0", True) and "attacker_0" in total_rewards:
+                total_rewards["attacker_0"] -= 3000.0
+                
+            # 对应的，目标机成功拖延时间活到了最后，任务圆满完成，给予巨额奖励
+            if not terminations.get("evader_0", True) and "evader_0" in total_rewards:
+                total_rewards["evader_0"] += 3000.0
         
         # 计算最新的观测值
         observations = {}
