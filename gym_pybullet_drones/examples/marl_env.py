@@ -172,6 +172,25 @@ class Drone1v1MARLEnv(MultiAgentEnv):
         if self.pyb_env.GUI:
             p.removeAllUserDebugItems(physicsClientId=self.pyb_env.CLIENT) # 清理上一局的残留线条
             
+            # --- 新增：高空战术参考网格 ---
+            # 设定在 3000米、6000米、9000米 绘制三层不同颜色的半透明网格
+            grid_altitudes = {
+                3000.0: [0.0, 0.5, 1.0],  # 浅蓝色
+                6000.0: [0.0, 1.0, 0.5],  # 青绿色
+                9000.0: [1.0, 0.5, 0.0]   # 橙色
+            }
+            
+            grid_size = 10000.0 # 网格覆盖范围 (正负 10km)
+            grid_step = 2000.0  # 每 2km 画一条线
+            
+            for z, color in grid_altitudes.items():
+                # 沿着 X 轴画线
+                for y in np.arange(-grid_size, grid_size + 1, grid_step):
+                    p.addUserDebugLine([-grid_size, y, z], [grid_size, y, z], color, 1.0, 0, physicsClientId=self.pyb_env.CLIENT)
+                # 沿着 Y 轴画线
+                for x in np.arange(-grid_size, grid_size + 1, grid_step):
+                    p.addUserDebugLine([x, -grid_size, z], [x, grid_size, z], color, 1.0, 0, physicsClientId=self.pyb_env.CLIENT)
+                    
             # 为目标机生成一个半透明的近炸引信杀伤圈
             fuze_v_id = p.createVisualShape(p.GEOM_SPHERE, radius=self.cpa_radius, rgbaColor=[1, 0.5, 0, 0.25])
             self.fuze_obj_id = p.createMultiBody(baseMass=0, baseVisualShapeIndex=fuze_v_id, basePosition=evader_pos, physicsClientId=self.pyb_env.CLIENT)
@@ -313,13 +332,12 @@ class Drone1v1MARLEnv(MultiAgentEnv):
         attacker_id = 0
         evader_id = 1
 
-        # ================= 新增：动作连续性惩罚 =================
+        # 动作连续性惩罚
         for agent, act in actions.items():
             if act != self.last_actions.get(agent, 0):
                 # 每次切换动作，扣除一点体力分，逼迫其保持动作连贯
                 total_rewards[agent] -= 0.5 
             self.last_actions[agent] = act
-        # ========================================================
 
         attacker_state_init = self.pyb_env._getDroneStateVector(attacker_id)
         evader_state_init = self.pyb_env._getDroneStateVector(evader_id)

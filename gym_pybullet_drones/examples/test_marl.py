@@ -37,7 +37,7 @@ if __name__ == "__main__":
     # "STRESS_TEST" -> 后台极速运行 100 局，统计真实胜率
     # "VISUAL_TEST" -> 带有 3D 界面和图表分析的单局观看模式
     # ==========================================
-    RUN_MODE = "VISUAL_TEST" 
+    RUN_MODE = "STRESS_TEST" 
 
     if RUN_MODE == "STRESS_TEST":
         print("==================================")
