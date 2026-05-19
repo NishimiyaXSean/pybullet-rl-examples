@@ -125,7 +125,7 @@ if __name__ == "__main__":
     print("\n" + "="*45)
     print("TensorBoard 日志准备就绪！")
     print("请新开一个终端（Terminal），运行以下命令查看实时曲线：")
-    print(f"tensorboard --logdir=\"{algo.logdir}\"")
+    print(f"tensorboard --logdir=\"{PROJECT_ROOT}\"")
     print("="*45 + "\n")
 
     '''
@@ -143,11 +143,9 @@ if __name__ == "__main__":
 
     # 7. 开始训练循环
     TRAIN_ITERATIONS = 500
-
-    # 初始化最优记录 (基于成功率)
-    # 初始化为 -0.01，这样可以确保第一轮训练（即使成功率是 0%）也能作为保底模型保存下来
-    best_success_rate = -0.01  
+    best_success_rate = -0.01   # 初始化成功率为 -0.01，这样可以确保第一轮训练（即使成功率是 0%）也能作为保底模型保存下来
     best_checkpoint_path = None    
+    global_episodes = 0  # 新增：全局回合计数器 
 
     print("==================================")
     print("开始多智能体 1v1 空战对抗训练！")
@@ -171,10 +169,9 @@ if __name__ == "__main__":
             total_steps = result.get("num_env_steps_trained", 0)
             episodes_this_iter = stats.get("num_episodes", 0)
 
-            # 提取成功率 
             # RLlib 会自动把 custom_metrics 里的字段加上 "_mean" 后缀表示平均值
             custom_metrics = stats.get("custom_metrics", {})
-            success_rate = custom_metrics.get("rate_success_mean", 0.0)
+            success_rate = custom_metrics.get("rate_success_mean", 0.0)  # 提取成功率 
             crash_rate   = custom_metrics.get("rate_crash_mean", 0.0)
             oob_rate     = custom_metrics.get("rate_oob_mean", 0.0)
             timeout_rate = custom_metrics.get("rate_timeout_mean", 0.0)
@@ -185,7 +182,7 @@ if __name__ == "__main__":
                   f"本轮局数: {episodes_this_iter:3d} | "
                   f"总训练步数: {total_steps}")
             
-            # ================= 新增：强行写入 TensorBoard =================
+            # 写入宏观平均曲线 (横坐标为 Iteration)
             # 参数格式: (图表名称, 具体数值, 横坐标迭代步数)
             tb_writer.add_scalar("1_Rewards/Attacker", reward_A, i+1)
             tb_writer.add_scalar("1_Rewards/Evader", reward_E, i+1)
@@ -194,9 +191,34 @@ if __name__ == "__main__":
             tb_writer.add_scalar("2_Combat_Rates/Ground_Crash", crash_rate * 100, i+1)
             tb_writer.add_scalar("2_Combat_Rates/Out_of_Bounds", oob_rate * 100, i+1)
             tb_writer.add_scalar("2_Combat_Rates/Timeout", timeout_rate * 100, i+1)
+
+            # ================= 核心进阶：写入微观每局曲线 =================
+            hist_stats = stats.get("hist_stats", {})
+            
+            # RLlib 默认会将 policy 奖励存为 "policy_{policy_id}_reward"
+            a_rewards_hist = hist_stats.get("policy_policy_attacker_reward", [])
+            e_rewards_hist = hist_stats.get("policy_policy_evader_reward", [])
+            
+            # 你在 callback 里记录的 custom_metrics 也会原封不动保存在这里
+            success_hist = hist_stats.get("rate_success", [])
+
+            # 遍历这一轮收集到的所有完整回合
+            for idx in range(len(a_rewards_hist)):
+                global_episodes += 1 # 推进全局回合数
+                
+                # 记录这一局两架飞机的真实得分
+                tb_writer.add_scalar("3_Micro_Per_Episode/Attacker_Reward", a_rewards_hist[idx], global_episodes)
+                
+                if idx < len(e_rewards_hist):
+                    tb_writer.add_scalar("3_Micro_Per_Episode/Evader_Reward", e_rewards_hist[idx], global_episodes)
+                
+                # 记录这一局是否发生了击杀 (1.0 代表成功，0.0 代表没成功)
+                # 这在图表上会形成 0 和 1 的散点图，非常直观！
+                if idx < len(success_hist):
+                    tb_writer.add_scalar("4_Micro_Events/Is_Success", success_hist[idx], global_episodes)
+            # ==============================================================
             
             tb_writer.flush() # 强制立刻写盘，绝不缓存延迟！
-            # ==============================================================
             
             # 保存最高成功率模型
             if success_rate > best_success_rate:
