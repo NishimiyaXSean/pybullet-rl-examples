@@ -1,15 +1,18 @@
 import os
-import shutil  # 新增：用于删除旧的最优模型文件夹
-# 解决 Windows 下 NumPy 和 PyTorch 的 OpenMP 冲突
-os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
-os.environ['TUNE_RESULT_DIR'] = os.path.abspath("./marl_logs")
+import shutil  # 用于删除旧的最优模型文件夹
+import datetime
+current_time = datetime.datetime.now().strftime("%m%d_%H%M")
+PROJECT_ROOT = os.path.abspath(f"./marl_runs/run_{current_time}")
+os.environ['TUNE_RESULT_DIR'] = PROJECT_ROOT
+os.environ['RAY_RESULTS'] = PROJECT_ROOT
+os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'  # 解决 Windows 下 NumPy 和 PyTorch 的 OpenMP 冲突
+os.environ['RAY_CHDIR_TO_TRIAL_DIR'] = '0' # 防止工作目录被意外篡改
 
 import torch
+from torch.utils.tensorboard import SummaryWriter
 import numpy as np
 import gymnasium as gym
 import ray
-import datetime
-from ray import tune
 from ray.rllib.algorithms.ppo import PPOConfig
 from ray.tune.registry import register_env
 from ray.rllib.algorithms.callbacks import DefaultCallbacks
@@ -110,16 +113,14 @@ if __name__ == "__main__":
         )
     )
 
-    # 获取当前时间
-    current_time = datetime.datetime.now().strftime("%m%d_%H%M")
-    CHECKPOINT_DIR = os.path.abspath(f"./marl_checkpoints/run_{current_time}")
-    LOG_DIR = os.path.abspath(f"./marl_logs/run_{current_time}")
-    os.makedirs(CHECKPOINT_DIR, exist_ok=True)
-    os.makedirs(LOG_DIR, exist_ok=True)
-
     # 6. 构建算法对象
     print("正在构建 RLlib 算法对象，请稍候...")
+
     algo = config.build()
+
+    # 创建独立的权重存放子文件夹
+    CHECKPOINT_DIR = os.path.join(PROJECT_ROOT, "checkpoints")
+    os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 
     print("\n" + "="*45)
     print("TensorBoard 日志准备就绪！")
@@ -137,6 +138,8 @@ if __name__ == "__main__":
     else:
         print("未发现旧模型，将从随机初始化开始全新训练。")
     '''
+
+    tb_writer = SummaryWriter(log_dir=PROJECT_ROOT)
 
     # 7. 开始训练循环
     TRAIN_ITERATIONS = 500
@@ -182,6 +185,19 @@ if __name__ == "__main__":
                   f"本轮局数: {episodes_this_iter:3d} | "
                   f"总训练步数: {total_steps}")
             
+            # ================= 新增：强行写入 TensorBoard =================
+            # 参数格式: (图表名称, 具体数值, 横坐标迭代步数)
+            tb_writer.add_scalar("1_Rewards/Attacker", reward_A, i+1)
+            tb_writer.add_scalar("1_Rewards/Evader", reward_E, i+1)
+            
+            tb_writer.add_scalar("2_Combat_Rates/Success_Kill", success_rate * 100, i+1)
+            tb_writer.add_scalar("2_Combat_Rates/Ground_Crash", crash_rate * 100, i+1)
+            tb_writer.add_scalar("2_Combat_Rates/Out_of_Bounds", oob_rate * 100, i+1)
+            tb_writer.add_scalar("2_Combat_Rates/Timeout", timeout_rate * 100, i+1)
+            
+            tb_writer.flush() # 强制立刻写盘，绝不缓存延迟！
+            # ==============================================================
+            
             # 保存最高成功率模型
             if success_rate > best_success_rate:
                 # 针对 0% 的初次保存做个特殊打印，后面的正常打印提升比例
@@ -224,4 +240,5 @@ if __name__ == "__main__":
     finally:
         # 无论正常跑完还是被中断，都确保关闭 Ray 引擎，释放内存
         ray.shutdown()
+        tb_writer.close() # 关闭写入器
         print("训练脚本已安全关闭。")

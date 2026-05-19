@@ -1,4 +1,0 @@
-新训练模型
-checkpoint——000100
-checkpoint——000150
-模型效果尚可
