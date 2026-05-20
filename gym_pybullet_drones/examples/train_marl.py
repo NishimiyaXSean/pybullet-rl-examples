@@ -97,7 +97,12 @@ if __name__ == "__main__":
             },
             # 定义“谁”用“哪个大脑”的映射规则
             policy_mapping_fn=lambda agent_id, episode, worker, **kwargs: 
-                "policy_attacker" if agent_id == "attacker_0" else "policy_evader"
+                "policy_attacker" if agent_id == "attacker_0" else "policy_evader",
+
+            # =============== 新增优化 ===============
+            # 在 Phase 1 阶段，只训练攻击机的大脑，目标机大脑完全冻结不参与计算
+            policies_to_train=["policy_attacker"]
+            # ========================================
         )
         
         # 5. 神经网络结构 (Net Arch)
@@ -128,16 +133,15 @@ if __name__ == "__main__":
     print(f"tensorboard --logdir=\"{PROJECT_ROOT}\"")
     print("="*45 + "\n")
 
-    '''
     # 加载旧模型以继续训练
-    OLD_CHECKPOINT = os.path.abspath("./marl_checkpoints/run_0515_1035/checkpoint_best_iter_258" )
+    OLD_CHECKPOINT = os.path.abspath("./marl_runs/run_0520_2002/checkpoints/checkpoint_final" )
 
     if os.path.exists(OLD_CHECKPOINT):
         print(f"正在恢复旧模型记忆: {OLD_CHECKPOINT}")
         algo.restore(OLD_CHECKPOINT)
     else:
         print("未发现旧模型，将从随机初始化开始全新训练。")
-    '''
+    
 
     tb_writer = SummaryWriter(log_dir=PROJECT_ROOT)
 

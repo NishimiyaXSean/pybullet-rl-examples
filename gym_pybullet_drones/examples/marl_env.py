@@ -40,7 +40,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
         self.CTRL_FREQ = 60
         self.is_manual_mode = False
         self.EPISODE_LEN_SEC = 100 # 回合最大时长
-        self.cpa_radius = 150.0     # 近炸引信触发半径
+        self.cpa_radius = 350.0     # 近炸引信触发半径
 
         # --- 战斗机飞行包线参数 (F-16/歼-10 级别模拟) ---
         self.MAX_G = 9.0          # 最大结构过载 (正G)
@@ -612,7 +612,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
 
             # [角色 1] 攻击机 (Attacker) 奖励结算
             if "attacker_0" in actions and not terminations["attacker_0"]:
-                TERMINAL_RADIUS = 500.0  # 定义末端冲刺阶段的判定半径
+                TERMINAL_RADIUS = 800.0  # 定义末端冲刺阶段的判定半径
 
                 # 计算双方的高度差 (Z轴距离)
                 dz = new_attacker_pos[2] - new_evader_pos[2]
