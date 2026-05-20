@@ -59,14 +59,14 @@ class Drone1v1MARLEnv(MultiAgentEnv):
             0:  ( 0,  1,  0.0),            # a1: 匀速直飞
             1:  ( 2,  1,  0.0),            # a2: 加速直飞
             2:  (-2,  1,  0.0),            # a3: 减速直飞
-            3:  ( 0,  8,  0.0),            # a4: 跃升
-            4:  ( 0, -8,  0.0),            # a5: 俯冲
-            5:  ( 0,  8,  np.pi / 3.0),    # a6: 左转跃升
-            6:  ( 0, -8, -np.pi / 3.0),    # a7: 右转俯冲
-            7:  ( 0,  8, -np.pi / 3.0),    # a8: 右转跃升
-            8:  ( 0, -8,  np.pi / 3.0),    # a9: 左转俯冲
-            9:  ( 0,  2, -np.pi / 3.0),    # a10: 右转
-            10: ( 0,  2,  np.pi / 3.0)     # a11: 左转
+            3:  ( 0,  8,  0.0),            # a4: 满G跃升
+            4:  ( 0, -2,  0.0),            # a5: 缓和俯冲 (修正不合理的 -8G)
+            5:  ( 0,  8,  np.pi / 2.2),    # a6: 极左转跃升 (约 81度，超大过载转弯)
+            6:  ( 0, -2, -np.pi / 2.2),    # a7: 右转俯冲 
+            7:  ( 0,  8, -np.pi / 2.2),    # a8: 极右转跃升
+            8:  ( 0, -2,  np.pi / 2.2),    # a9: 左转俯冲
+            9:  ( 0,  6, -np.pi / 2.0),    # a10: 纯右转盘旋 (90度滚转)
+            10: ( 0,  6,  np.pi / 2.0)     # a11: 纯左转盘旋
         }
 
         # 3. 字典化的观测空间与动作空间
@@ -133,9 +133,14 @@ class Drone1v1MARLEnv(MultiAgentEnv):
             pyb_id = self.pyb_env.DRONE_IDS[i] if hasattr(self.pyb_env, 'DRONE_IDS') else self.pyb_env.drone_ids[i]
             
             # 修复：计算指向原点 (0,0) 的偏航角
-            dx = -initial_pos[0]
-            dy = -initial_pos[1]
-            yaw = np.arctan2(dy, dx)
+            if agent == "attacker_0":
+                dx = -initial_pos[0]
+                dy = -initial_pos[1]
+                yaw = np.arctan2(dy, dx)
+                self.attacker_init_yaw = yaw # 记录一下攻击机的朝向
+            else:
+                # 目标机：强制与攻击机初始航向大致相同 (制造“尾随”或“侧面拦截”的完美教学局)
+                yaw = self.attacker_init_yaw
             
             # 根据真实偏航角分解 X 和 Y 方向的初始速度
             init_vel = [initial_speed * np.cos(yaw), initial_speed * np.sin(yaw), 0.0]
@@ -646,7 +651,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                     
                     # 引入水平冲刺系数 
                     # 避免主机在最后一刻从天顶垂直“砸”向目标。只有当高度差极小时，才给予 100% 的速度冲刺奖励。高度差越大，冲刺奖励的折扣越狠。
-                    z_alignment_factor = np.clip(200 - abs(dz), 0.0, 1.0)
+                    z_alignment_factor = np.clip((200.0 - abs(dz)) / 200.0, 0.0, 1.0)
                     # 计算速度在视线方向上的投影 (接近率)
                     closing_speed = np.dot(attacker_vel, los_dir)
                     if closing_speed > 0:
