@@ -102,15 +102,15 @@ class Drone1v1MARLEnv(MultiAgentEnv):
         sign_x = np.random.choice([-1, 1])
         sign_y = np.random.choice([-1, 1])
 
-        # 2. 在该象限内，生成 2000 到 4000 米的初始距离
-        attacker_x = sign_x * np.random.uniform(2000.0, 4000.0)
-        attacker_y = sign_y * np.random.uniform(2000.0, 4000.0)
-        attacker_z = np.random.uniform(3000.0, 5000.0) 
+        # 2. 在该象限内，生成初始距离
+        attacker_x = sign_x * np.random.uniform(500.0, 1500.0)
+        attacker_y = sign_y * np.random.uniform(500.0, 1500.0)
+        attacker_z = np.random.uniform(1500.0, 2000.0) 
 
         # 3. 目标机强制取相反符号，确保永远出生在对角象限！
-        evader_x = -sign_x * np.random.uniform(2000.0, 4000.0)
-        evader_y = -sign_y * np.random.uniform(2000.0, 4000.0)
-        evader_z = np.random.uniform(2000.0, 4000.0)
+        evader_x = -sign_x * np.random.uniform(500.0, 1500.0)
+        evader_y = -sign_y * np.random.uniform(500.0, 1500.0)
+        evader_z = np.random.uniform(1000.0, 1500.0)
         self.evader_initial_z = evader_z
 
         # 组合成新的初始坐标数组
@@ -177,16 +177,16 @@ class Drone1v1MARLEnv(MultiAgentEnv):
         if self.pyb_env.GUI:
             p.removeAllUserDebugItems(physicsClientId=self.pyb_env.CLIENT) # 清理上一局的残留线条
             
-            # --- 新增：高空战术参考网格 ---
-            # 设定在 3000米、6000米、9000米 绘制三层不同颜色的半透明网格
+            # 高空战术参考网格
+            # 设定在 1500米、3000米、4500米 绘制三层不同颜色的半透明网格
             grid_altitudes = {
-                3000.0: [0.0, 0.5, 1.0],  # 浅蓝色
-                6000.0: [0.0, 1.0, 0.5],  # 青绿色
-                9000.0: [1.0, 0.5, 0.0]   # 橙色
+                1500.0: [0.0, 0.5, 1.0],  # 浅蓝色 (低空参考线)
+                3000.0: [0.0, 1.0, 0.5],  # 青绿色 (中空参考线)
+                4500.0: [1.0, 0.5, 0.0]   # 橙色   (高空警告线，接近 5000m 天花板)
             }
             
-            grid_size = 10000.0 # 网格覆盖范围 (正负 10km)
-            grid_step = 2000.0  # 每 2km 画一条线
+            grid_size = 4000.0 # 缩小网格覆盖范围到正负 4km (8km x 8km)
+            grid_step = 500.0  # 加密网格：每 500m 画一条线 (完美对应 WARNING_RADIUS 告警距离)
             
             for z, color in grid_altitudes.items():
                 # 沿着 X 轴画线
@@ -286,8 +286,8 @@ class Drone1v1MARLEnv(MultiAgentEnv):
         local_enemy_vel = np.array(local_enemy_vel)
 
         # 5. 物理量级缩放 (Pre-normalization) - 防止神经网络梯度爆炸
-        MAX_DIST = 10000.0     
-        MAX_HEIGHT = 15000.0
+        MAX_DIST = 5000.0     
+        MAX_HEIGHT = 5000.0
         MAX_VEL = 400.0    
         MAX_ANG_VEL = np.pi 
 
@@ -392,7 +392,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 agent_current_z = pos[2]
 
                 # GPWS 近地警告覆盖
-                if agent_current_z < 1500.0 and vel[2] < 0:  # 高度低于1500米且具有向下的速度
+                if agent_current_z < 500.0 and vel[2] < 0:  # 高度低于500米且具有向下的速度
                     n_n_cmd = current_max_g  # 强制给足 9G 拉起
                     mu_cmd = 0.0             # 强制改平滚转角，确保升力完全指向上方
                     total_rewards[agent] -= 2.0 * dt  # 给予严厉惩罚，让 AI 知道低空俯冲是禁区
@@ -450,15 +450,15 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 # 高度限制与天花板惩罚 
                 if agent == "attacker_0":
                     # 我方无人机：触碰天花板时给予持续惩罚，防止利用边界“滑行”
-                    if new_pos[2] > 15000.0 :
-                        new_pos[2] = 15000.0
+                    if new_pos[2] > 5000.0 :
+                        new_pos[2] = 5000.0
                         total_rewards[agent] -= 0.5 * dt  # 累加高度软惩罚
                     # 正常防钻地（不给惩罚，直接限制）
                     elif new_pos[2] < 1.0:
                         new_pos[2] = 1.0
                 else:
                     # 目标机：仅保留原有的物理边界限制，不施加任何额外惩罚
-                    new_pos[2] = np.clip(new_pos[2], 1.0, 15000.0)
+                    new_pos[2] = np.clip(new_pos[2], 1.0, 5000.0)
 
                 # ================= 核心修复：更新本地账本并强制洗白 PyBullet =================
                 trusted_states[agent]["pos"] = new_pos
@@ -618,8 +618,8 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 dz = new_attacker_pos[2] - new_evader_pos[2]
 
                 # 1. 靠近奖励 (全局生效：缩短距离加分，被拉开扣分)
-                reward_A_progress = -micro_delta_dist * 20.0 
-                reward_A_progress = np.clip(reward_A_progress, -100.0, 100.0)
+                reward_A_progress = -micro_delta_dist * 2.0 
+                reward_A_progress = np.clip(reward_A_progress, -10.0, 10.0)
                 reward_A_distance_penalty = - (new_dist / 1000.0) * 1.5 * dt  # 绝对距离势能惩罚
 
                 # 2. 时间惩罚 (全局生效：逼迫速战速决)
@@ -673,7 +673,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                         reward_A_tracking = -(1.0 - cos_ata_attacker) * 2.0 * dt
                 
                 # 单帧结算
-                total_rewards["attacker_0"] += (reward_A_progress + reward_A_tracking + reward_A_time + reward_A_ramming + reward_A_z_penalty + reward_A_ground_warning)
+                total_rewards["attacker_0"] += (reward_A_progress + reward_A_distance_penalty + reward_A_tracking + reward_A_time + reward_A_ramming + reward_A_z_penalty + reward_A_ground_warning)
 
             # [角色 2] 目标机 (Evader) 奖励结算
             if "evader_0" in actions and not terminations["evader_0"]:
@@ -795,7 +795,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                         terminations[agent] = True
                         infos[agent]["reason"] = "ground_crash"
                         crash_occurred = True 
-                    elif state[2] > 15000.0:
+                    elif state[2] > 5000.0:
                         total_rewards[agent] -= 100.0
                         terminations[agent] = True
                         infos[agent]["reason"] = "out_of_bounds" 
