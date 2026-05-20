@@ -765,13 +765,13 @@ class Drone1v1MARLEnv(MultiAgentEnv):
 
             # 2. 擦肩而过，触发近炸引信
             # new_dist 是物理步进后的距离，dist 是步进前的距离。
-            # 如果进入杀伤圈，且距离开始拉大 (new_dist - dist > 0)，说明刚刚掠过极小值点
-            elif new_dist < self.cpa_radius and (new_dist - current_micro_dist) > 0:
-                miss_distance = current_micro_dist # 取上一微小帧的极小值
+            # 如果进入杀伤圈，且距离开始拉大，说明刚刚掠过极小值点
+            elif new_dist < self.cpa_radius and raw_micro_delta > 0:
+                miss_distance = new_dist - raw_micro_delta # 取上一微小帧的极小值
                 
                 # 根据脱靶量计算梯度得分：基础分1000 + 4000 * (1 - (脱靶量 - 50.0) / 杀伤区间)
                 score_ratio = 1.0 - ((miss_distance - 50.0) / (self.cpa_radius - 50.0))
-                reward_terminal = 1000.0 + 4000.0 * score_ratio
+                reward_terminal = 1000.0 + 4000.0 * np.clip(score_ratio, 0.0, 1.0)
                 
                 # 双方进行分数结算 (零和博弈)
                 if "attacker_0" in total_rewards and not terminations["attacker_0"]: total_rewards["attacker_0"] += reward_terminal
