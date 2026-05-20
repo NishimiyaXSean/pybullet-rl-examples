@@ -255,11 +255,12 @@ class Drone1v1MARLEnv(MultiAgentEnv):
         tactical_geometry = np.array([cos_ata, cos_aa, cos_hca], dtype=np.float32)
         # ------------------------------------------------
 
-        # 3. 核心坐标转换：构建“我”的机头坐标系 (基于 Yaw)
-        # 提取我在这个物理帧的真实朝向
-        my_yaw = my_rpy[2] 
-        my_quat = p.getQuaternionFromEuler([0, 0, my_yaw])
-        _, inv_quat = p.invertTransform([0, 0, 0], my_quat)
+        # 3. 核心坐标转换：构建真正的体轴坐标系 (Body Frame)
+        # 直接使用底层物理引擎给出的完整 3D 姿态四元数
+        my_full_quat = my_state[3:7] 
+        
+        # 获取从世界坐标系到当前飞机体轴坐标系的逆变换矩阵
+        _, inv_quat = p.invertTransform([0, 0, 0], my_full_quat)
 
         # 4. 计算相对变量，并投影到“我”的第一人称坐标系中
         # --- A. 敌机相对我的位置 ---
@@ -341,6 +342,18 @@ class Drone1v1MARLEnv(MultiAgentEnv):
 
         attacker_state_init = self.pyb_env._getDroneStateVector(attacker_id)
         evader_state_init = self.pyb_env._getDroneStateVector(evader_id)
+
+        # ================= 新增：在物理循环前强制覆盖动作 =================
+        if "evader_0" in actions:
+            # 计算水平距离
+            init_dist_xy = np.linalg.norm(evader_state_init[0:2] - attacker_state_init[0:2])
+            WARNING_RADIUS = 500.0
+            
+            # 如果在安全距离外，直接把字典里的动作篡改为 0 (匀速平飞)
+            if init_dist_xy > WARNING_RADIUS:
+                actions["evader_0"] = 0
+        # ================================================================
+
         dist = np.linalg.norm(attacker_state_init[0:3] - evader_state_init[0:3])
         current_micro_dist = dist
 
@@ -380,10 +393,10 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 agent_current_z = pos[2]
 
                 # GPWS 近地警告覆盖
-                if agent_current_z < 300.0 and n_n_cmd < 0:
-                    n_n_cmd = current_max_g
-                    mu_cmd = 0.0 # 改平滚转角
-                    total_rewards[agent] -= 2.0 * dt
+                if agent_current_z < 1500.0 and vel[2] < 0:  # 高度低于1500米且具有向下的速度
+                    n_n_cmd = current_max_g  # 强制给足 9G 拉起
+                    mu_cmd = 0.0             # 强制改平滚转角，确保升力完全指向上方
+                    total_rewards[agent] -= 2.0 * dt  # 给予严厉惩罚，让 AI 知道低空俯冲是禁区
 
                 V = np.linalg.norm(vel)
                 if V < 1e-3: V = 1e-3  # 防止除以 0
@@ -620,11 +633,10 @@ class Drone1v1MARLEnv(MultiAgentEnv):
 
                 # Z 轴共面对齐惩罚 
                 reward_A_z_penalty = 0.0
-                if abs(dz) > 100.0: # 如果高度差大于 100 米，则开始施加基于高度差的持续惩罚，逼迫主机下降到与目标机大致平齐的高度。
-                    reward_A_z_penalty = -(abs(dz) - 100.0) * 0.01 * dt
+                if dz < -200.0: # 只有当攻击机比目标机低 200 米以上时才轻微惩罚
+                    reward_A_z_penalty = (dz + 200.0) * 0.01 * dt
 
                 # 攻击机软地板警告 
-                # 设定 3.0 米为“近地警告线”。低于此高度，每掉 0.1 米扣分越狠
                 reward_A_ground_warning = 0.0
                 if new_attacker_pos[2] < 500.0:  # 设定 500 米为“近地警告线”。低于此高度，每掉 0.1 米扣分越狠
                     reward_A_ground_warning = -(500.0 - new_attacker_pos[2]) * 0.05 * dt
@@ -638,16 +650,20 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                     reward_A_tracking = 0.0 
                     
                     # 2. 动能冲刺奖励 (Ramming Bonus)
-                    # 提取主机当前的绝对线速度，速度越快得分越高，鼓励“踩油门”撞击
+                    # 替换绝对速度奖励为接近速度奖励
+                    los_vec = new_evader_pos - new_attacker_pos
+                    los_dir = los_vec / (np.linalg.norm(los_vec) + 1e-6)
                     attacker_vel = self.pyb_env._getDroneStateVector(attacker_id)[10:13]
-                    vel_norm = np.linalg.norm(attacker_vel)
                     
-                    # ================= 修改：引入水平冲刺系数 =================
-                    # 避免主机在最后一刻从天顶垂直“砸”向目标。
-                    # 只有当高度差极小时，才给予 100% 的速度冲刺奖励。
-                    # 高度差越大，冲刺奖励的折扣越狠。
+                    # 引入水平冲刺系数 
+                    # 避免主机在最后一刻从天顶垂直“砸”向目标。只有当高度差极小时，才给予 100% 的速度冲刺奖励。高度差越大，冲刺奖励的折扣越狠。
                     z_alignment_factor = np.clip(200 - abs(dz), 0.0, 1.0)
-                    reward_A_ramming = vel_norm * 5.0 * dt * z_alignment_factor
+                    # 计算速度在视线方向上的投影 (接近率)
+                    closing_speed = np.dot(attacker_vel, los_dir)
+                    if closing_speed > 0:
+                        reward_A_ramming = closing_speed * 0.05 * dt * z_alignment_factor
+                    else:
+                        reward_A_ramming = 0.0
                     # ========================================================
                 else:
                     # --- 中程追踪阶段 (Mid-course Phase) ---
@@ -667,7 +683,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
 
             # [角色 2] 目标机 (Evader) 奖励结算
             if "evader_0" in actions and not terminations["evader_0"]:
-                WARNING_RADIUS = 300.0  # 告警半径设置
+                WARNING_RADIUS = 500.0  # 告警半径设置
                 
                 reward_E_escape = 0.0
                 reward_E_jinking = 0.0
@@ -696,28 +712,43 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                         hca_reward = (0.2 - cos_hca) * 1.5 * dt
                         
                     reward_E_jinking = threat_penalty + hca_reward
+                
+                
+                '''
                 else:
                     # --- 安全区域：鼓励直线平飞 ---
                     evader_action = int(actions["evader_0"])
                     # BFM 动作库中：0=匀速直飞, 1=加速直飞, 2=减速直飞
+                    # 1. 动作级奖励：鼓励选择平飞 BFM
+                    # 0=匀速直飞, 1=加速直飞, 2=减速直飞
                     if evader_action in [0, 1, 2]: 
-                        reward_E_straight = 0.5 * dt
-                        current_z = new_evader_pos[2]
-                        # 设定一个期望的安全平飞高度
-                        target_altitude = self.evader_initial_z 
-                        height_error = abs(target_altitude - current_z)
-                        if height_error > 100.0: 
-                            # 掉得越多，惩罚越重
-                            reward_E_straight -= (height_error * 0.01 * dt)
+                        reward_E_straight += 1.0 * dt  # 提高奖励权重，明确告诉AI这是对的
                     else:
-                        # 如果在安全距离做大过载机动，给予轻微惩罚
-                        reward_E_straight = -0.3 * dt
+                        # 惩罚在安全距离乱做大过载或滚转机动
+                        reward_E_straight -= 0.5 * dt
 
-                # ================= 新增：目标机软地板警告 =================
+                    # 2. 物理姿态级惩罚：逼迫飞机保持水平
+                    # 提取目标机当前的 Roll (滚转) 和 Pitch (俯仰) 角
+                    evader_rpy = new_evader_state[7:10] 
+                    roll = evader_rpy[0]
+                    pitch = evader_rpy[1]
+                    
+                    # 姿态越倾斜，扣分越多 (鼓励 Roll 和 Pitch 趋近于 0)
+                    attitude_penalty = (abs(roll) + abs(pitch)) * 0.5 * dt
+                    reward_E_straight -= attitude_penalty
+
+                    # 3. 垂直速度惩罚：替代原本僵硬的“绝对高度惩罚”
+                    # 只要飞机不往下掉，就不扣分。这能有效防止死亡俯冲。
+                    evader_vel_z = new_evader_state[10:13][2]
+                    if evader_vel_z < -2.0:  # 允许 2m/s 以内的微小掉高，超过则惩罚下坠率
+                        reward_E_straight -= abs(evader_vel_z) * 0.05 * dt
+                    
+                    '''
+
+                # 目标机软地板警告 
                 reward_E_ground_warning = 0.0
                 if new_evader_pos[2] < 300.0:
                     reward_E_ground_warning = -(300.0 - new_evader_pos[2]) * 0.5 * dt
-                # ========================================================
                         
                 # 单帧结算
                 total_rewards["evader_0"] += (reward_E_escape + reward_E_survival + reward_E_jinking + reward_E_straight + reward_E_ground_warning)
