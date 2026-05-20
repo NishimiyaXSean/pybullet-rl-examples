@@ -343,16 +343,10 @@ class Drone1v1MARLEnv(MultiAgentEnv):
         attacker_state_init = self.pyb_env._getDroneStateVector(attacker_id)
         evader_state_init = self.pyb_env._getDroneStateVector(evader_id)
 
-        # ================= 新增：在物理循环前强制覆盖动作 =================
+        # ================= Phase 1 强制干预：全局锁定目标机平飞 =================
         if "evader_0" in actions:
-            # 计算水平距离
-            init_dist_xy = np.linalg.norm(evader_state_init[0:2] - attacker_state_init[0:2])
-            WARNING_RADIUS = 500.0
-            
-            # 如果在安全距离外，直接把字典里的动作篡改为 0 (匀速平飞)
-            if init_dist_xy > WARNING_RADIUS:
-                actions["evader_0"] = 0
-        # ================================================================
+            actions["evader_0"] = 0  # 无视任何距离和告警，永远执行动作 0 (匀速直飞)
+        # =====================================================================
 
         dist = np.linalg.norm(attacker_state_init[0:3] - evader_state_init[0:3])
         current_micro_dist = dist
@@ -420,11 +414,6 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                     n_x = 0.0  # 超过极速无法继续加速 (阻力壁垒)
                 elif V < self.STALL_SPEED and n_x_cmd < 0:
                     n_x = 0.0  # 接近失速时无法继续减速
-
-                # 新增 MARL 学习优化：惩罚“违背物理定律”的意图
-                # 如果 AI 给出的指令超出了物理极限被强制裁剪了，必须扣除奖励，逼迫神经网络学习并记忆这架飞机的包线，而不是瞎推杆。
-                if abs(n_n_cmd - n_n) > 0.1:
-                    total_rewards[agent] -= 1.0 * dt  # "蛮力推杆"惩罚
                 
                 gamma = np.arcsin(np.clip(vel[2] / V, -1.0, 1.0)) # 航迹俯仰角
                 chi = np.arctan2(vel[1], vel[0])                  # 航迹方位角
@@ -683,6 +672,12 @@ class Drone1v1MARLEnv(MultiAgentEnv):
 
             # [角色 2] 目标机 (Evader) 奖励结算
             if "evader_0" in actions and not terminations["evader_0"]:
+                # ================= Phase 1 打靶阶段简化 =================
+                # 目标机作为固定靶，不再计算复杂的规避奖励，防止梯度混乱并节省算力
+                total_rewards["evader_0"] += 0.0 
+                # =======================================================
+            '''
+            if "evader_0" in actions and not terminations["evader_0"]:
                 WARNING_RADIUS = 500.0  # 告警半径设置
                 
                 reward_E_escape = 0.0
@@ -712,9 +707,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                         hca_reward = (0.2 - cos_hca) * 1.5 * dt
                         
                     reward_E_jinking = threat_penalty + hca_reward
-                
-                
-                '''
+
                 else:
                     # --- 安全区域：鼓励直线平飞 ---
                     evader_action = int(actions["evader_0"])
@@ -742,8 +735,6 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                     evader_vel_z = new_evader_state[10:13][2]
                     if evader_vel_z < -2.0:  # 允许 2m/s 以内的微小掉高，超过则惩罚下坠率
                         reward_E_straight -= abs(evader_vel_z) * 0.05 * dt
-                    
-                    '''
 
                 # 目标机软地板警告 
                 reward_E_ground_warning = 0.0
@@ -753,6 +744,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 # 单帧结算
                 total_rewards["evader_0"] += (reward_E_escape + reward_E_survival + reward_E_jinking + reward_E_straight + reward_E_ground_warning)
 
+                '''
             # 1. 动能撞击 / 击杀成功
             if new_dist < 50.0 and self.macro_step > 2: # 增加暖机帧保护
                 if not terminations["attacker_0"]: total_rewards["attacker_0"] += 5000.0
