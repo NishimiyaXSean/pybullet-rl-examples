@@ -637,10 +637,8 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 # 2. 时间惩罚 (全局生效：逼迫速战速决)
                 reward_A_time = -0.1 * dt
 
-                # Z 轴共面对齐惩罚 
-                reward_A_z_penalty = 0.0
-                if dz < 0: 
-                    reward_A_z_penalty = dz * 0.05 * dt
+                # 全向高度对齐惩罚
+                reward_A_z_penalty = -abs(dz) * 0.005 * dt 
 
                 reward_A_energy_loss = -((n_n - 1.0) ** 2) * 0.08 * dt  # 新增能量管理惩罚
 
@@ -675,7 +673,16 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                     # ========================================================
                 else:
                     # --- 中程追踪阶段 (Mid-course Phase) ---
-    
+                    
+                    # 计算相对速度矢量，用于指引“直线提前量拦截”
+                    vel_A = trusted_states["attacker_0"]["vel"]
+                    vel_E = trusted_states["evader_0"]["vel"]
+                    rel_vel = vel_A - vel_E
+                    rel_vel_dir = rel_vel / (np.linalg.norm(rel_vel) + 1e-6)
+                    
+                    # cos_collision 衡量的是“相对速度”是否指向目标，这是直线拦截的核心！
+                    cos_collision = np.clip(np.dot(rel_vel_dir, los_dir), -1.0, 1.0)
+
                     if cos_ata_attacker > 0:
                         # [前半球]：目标在我的视野前方
                         if cos_aa_attacker > 0:
@@ -683,11 +690,11 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                             advantage_score = (cos_ata_attacker * cos_aa_attacker) ** 2
                             reward_A_tracking = advantage_score * 0.5 * dt
                         else:
-                            # 迎头/侧向：只要机头指着目标，就给基础奖励
-                            reward_A_tracking = cos_ata_attacker * 0.2 * dt
+                            # 侧向/迎头拦截：不仅要求机头大致对准 (cos_ata)，更要求相对轨迹对准 (cos_collision)
+                            # 降低对机头指向的要求，大幅提高对碰撞航线的奖励，逼迫它打提前量！
+                            reward_A_tracking = (cos_ata_attacker * 0.1 + cos_collision * 0.8) * dt  # 融合提前量奖励
                     else:
-                        # ================= 核心修复：严厉的过冲惩罚 =================
-                        # [后半球]：目标跑到了我的背后！
+                        # [后半球]：目标跑到背后————严厉的过冲惩罚
                         # cos_ata_attacker 为负数，偏离越远扣分越狠。
                         # 权重设为 4.0，强迫它一旦飞过头，必须宁可承受掉能量的惩罚，也要立刻交出滚转和拉升来调转机头！
                         reward_A_tracking = cos_ata_attacker * 4.0 * dt
