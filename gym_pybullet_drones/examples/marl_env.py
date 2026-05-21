@@ -139,9 +139,21 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 yaw = np.arctan2(dy, dx)
                 self.attacker_init_yaw = yaw # 记录一下攻击机的朝向
             else:
-                # 目标机：强制与攻击机初始航向大致相同 (制造“尾随”或“侧面拦截”的完美教学局)
-                yaw = self.attacker_init_yaw
-            
+                # ================= 课程学习 Stage 1.5：全向直线拦截 =================
+                # 引入四种经典的战术初始态势，并加入 ±15度 的随机扰动防止过拟合
+                
+                # 0:        纯尾追 (Tail-on)
+                # np.pi/2:  左侧向交叉 (Left-Beam)
+                # -np.pi/2: 右侧向交叉 (Right-Beam)
+                # np.pi:    迎头对冲 (Head-on)
+                tactical_offset = np.random.choice([0.0, np.pi/2, -np.pi/2, np.pi])
+                
+                # 添加随机扰动 (约 ±15 度)
+                noise = np.random.uniform(-np.pi/12, np.pi/12)
+                
+                yaw = self.attacker_init_yaw + tactical_offset + noise
+                # ====================================================================
+                
             # 根据真实偏航角分解 X 和 Y 方向的初始速度
             init_vel = [initial_speed * np.cos(yaw), initial_speed * np.sin(yaw), 0.0]
             init_quat = p.getQuaternionFromEuler([0, 0, yaw])

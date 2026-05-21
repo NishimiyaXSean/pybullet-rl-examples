@@ -134,7 +134,7 @@ if __name__ == "__main__":
     print("="*45 + "\n")
 
     # 加载旧模型以继续训练
-    OLD_CHECKPOINT = os.path.abspath("./marl_runs/run_0520_2119/checkpoints/checkpoint_best_iter_402" )
+    OLD_CHECKPOINT = os.path.abspath("./marl_runs/run_0521_1029/checkpoints/checkpoint_best_iter_224" )
 
     if os.path.exists(OLD_CHECKPOINT):
         print(f"正在恢复旧模型记忆: {OLD_CHECKPOINT}")
@@ -173,16 +173,29 @@ if __name__ == "__main__":
             total_steps = result.get("num_env_steps_trained", 0)
             episodes_this_iter = stats.get("num_episodes", 0)
 
-            # RLlib 会自动把 custom_metrics 里的字段加上 "_mean" 后缀表示平均值
-            custom_metrics = stats.get("custom_metrics", {})
-            success_rate = custom_metrics.get("rate_success_mean", 0.0)  # 提取成功率 
-            crash_rate   = custom_metrics.get("rate_crash_mean", 0.0)
-            oob_rate     = custom_metrics.get("rate_oob_mean", 0.0)
-            timeout_rate = custom_metrics.get("rate_timeout_mean", 0.0)
+            # ================= 核心修复：精准提取本轮迭代的真实统计 =================
+            hist_stats = stats.get("hist_stats", {})
+
+            # 提取当前迭代收集到的所有完整回合的原始 0/1 记录列表
+            success_list = hist_stats.get("rate_success", [])
+            crash_list   = hist_stats.get("rate_crash", [])
+            oob_list     = hist_stats.get("rate_oob", [])
+            timeout_list = hist_stats.get("rate_timeout", [])
+
+            # 辅助函数：安全计算当前列表的真实均值
+            def calc_iter_mean(lst):
+                return sum(lst) / len(lst) if len(lst) > 0 else 0.0
+
+            # 现在的率值，严格等于本轮迭代的真实表现，没有任何历史数据的污染
+            success_rate = calc_iter_mean(success_list)
+            crash_rate   = calc_iter_mean(crash_list)
+            oob_rate     = calc_iter_mean(oob_list)
+            timeout_rate = calc_iter_mean(timeout_list)
+            # =====================================================================
             
             print(f"迭代 {i+1:03d} | "
                   f"奖励(主/敌): {reward_A:6.1f} / {reward_E:6.1f} | "
-                  f"终局占比 -> 击杀:{success_rate*100:5.1f}% | 坠地:{crash_rate*100:5.1f}% | 越界:{oob_rate*100:5.1f}% | 超时:{timeout_rate*100:5.1f}% | "
+                  f"本轮真实终局 -> 击杀:{success_rate*100:5.1f}% | 坠地:{crash_rate*100:5.1f}% | 越界:{oob_rate*100:5.1f}% | 超时:{timeout_rate*100:5.1f}% | "
                   f"本轮局数: {episodes_this_iter:3d} | "
                   f"总训练步数: {total_steps}")
             
@@ -194,9 +207,6 @@ if __name__ == "__main__":
             tb_writer.add_scalar("2_Combat_Rates/Ground_Crash", crash_rate * 100, i+1)
             tb_writer.add_scalar("2_Combat_Rates/Out_of_Bounds", oob_rate * 100, i+1)
             tb_writer.add_scalar("2_Combat_Rates/Timeout", timeout_rate * 100, i+1)
-
-            # ================= 核心进阶：写入微观每局曲线 =================
-            hist_stats = stats.get("hist_stats", {})
             
             # RLlib 默认会将 policy 奖励存为 "policy_{policy_id}_reward"
             a_rewards_hist = hist_stats.get("policy_policy_attacker_reward", [])

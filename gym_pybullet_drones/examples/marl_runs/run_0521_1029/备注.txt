@@ -1,0 +1,2 @@
+This model is trained upon ./marl_runs/run_0520_2349/checkpoints/checkpoint_best_iter_220
+最高成功率97%
