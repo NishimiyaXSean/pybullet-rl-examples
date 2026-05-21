@@ -39,7 +39,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
 
         self.CTRL_FREQ = 60
         self.is_manual_mode = False
-        self.EPISODE_LEN_SEC = 100 # 回合最大时长
+        self.EPISODE_LEN_SEC = 45 # 回合最大时长
         self.cpa_radius = 150.0     # 近炸引信触发半径
 
         # --- 战斗机飞行包线参数 (F-16/歼-10 级别模拟) ---
@@ -153,7 +153,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 
                 yaw = self.attacker_init_yaw + tactical_offset + noise
                 # ====================================================================
-                
+
             # 根据真实偏航角分解 X 和 Y 方向的初始速度
             init_vel = [initial_speed * np.cos(yaw), initial_speed * np.sin(yaw), 0.0]
             init_quat = p.getQuaternionFromEuler([0, 0, yaw])
@@ -676,15 +676,21 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 else:
                     # --- 中程追踪阶段 (Mid-course Phase) ---
     
-                    # 只有当攻击机在敌机后半球 (cos_aa_attacker > 0)，且机头大致指向敌机 (cos_ata_attacker > 0) 时，才给予阵位奖励。
-                    if cos_ata_attacker > 0 and cos_aa_attacker > 0:
-                        # 组合奖励：越接近完美的尾随瞄准 (两者皆趋近于 1)，得分呈指数级上升
-                        advantage_score = (cos_ata_attacker * cos_aa_attacker) ** 2
-                        reward_A_tracking = advantage_score * 0.5 * dt
+                    if cos_ata_attacker > 0:
+                        # [前半球]：目标在我的视野前方
+                        if cos_aa_attacker > 0:
+                            # 优势尾随：两者同向且目标在前方，给予高额奖励
+                            advantage_score = (cos_ata_attacker * cos_aa_attacker) ** 2
+                            reward_A_tracking = advantage_score * 0.5 * dt
+                        else:
+                            # 迎头/侧向：只要机头指着目标，就给基础奖励
+                            reward_A_tracking = cos_ata_attacker * 0.2 * dt
                     else:
-                        # 如果不在优势阵位，给予轻微的“脱靶惩罚”，逼迫其进行机动
-                        # 惩罚力度与机头偏离程度成正比
-                        reward_A_tracking = -(1.0 - cos_ata_attacker) * 2.0 * dt
+                        # ================= 核心修复：严厉的过冲惩罚 =================
+                        # [后半球]：目标跑到了我的背后！
+                        # cos_ata_attacker 为负数，偏离越远扣分越狠。
+                        # 权重设为 4.0，强迫它一旦飞过头，必须宁可承受掉能量的惩罚，也要立刻交出滚转和拉升来调转机头！
+                        reward_A_tracking = cos_ata_attacker * 4.0 * dt
                 
                 # 单帧结算
                 total_rewards["attacker_0"] += (

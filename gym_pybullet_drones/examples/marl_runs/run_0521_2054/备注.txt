@@ -1,0 +1,1 @@
+This model is trained upon /run_0521_1624/checkpoints/checkpoint_best_iter_492
