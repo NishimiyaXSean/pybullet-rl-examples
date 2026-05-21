@@ -40,7 +40,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
         self.CTRL_FREQ = 60
         self.is_manual_mode = False
         self.EPISODE_LEN_SEC = 100 # 回合最大时长
-        self.cpa_radius = 350.0     # 近炸引信触发半径
+        self.cpa_radius = 150.0     # 近炸引信触发半径
 
         # --- 战斗机飞行包线参数 (F-16/歼-10 级别模拟) ---
         self.MAX_G = 9.0          # 最大结构过载 (正G)
@@ -627,8 +627,10 @@ class Drone1v1MARLEnv(MultiAgentEnv):
 
                 # Z 轴共面对齐惩罚 
                 reward_A_z_penalty = 0.0
-                if dz < -200.0: # 只有当攻击机比目标机低 200 米以上时才轻微惩罚
-                    reward_A_z_penalty = (dz + 200.0) * 0.01 * dt
+                if dz < 0: 
+                    reward_A_z_penalty = dz * 0.05 * dt
+
+                reward_A_energy_loss = -((n_n - 1.0) ** 2) * 0.08 * dt  # 新增能量管理惩罚
 
                 # 攻击机软地板警告 
                 reward_A_ground_warning = 0.0
@@ -673,7 +675,16 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                         reward_A_tracking = -(1.0 - cos_ata_attacker) * 2.0 * dt
                 
                 # 单帧结算
-                total_rewards["attacker_0"] += (reward_A_progress + reward_A_distance_penalty + reward_A_tracking + reward_A_time + reward_A_ramming + reward_A_z_penalty + reward_A_ground_warning)
+                total_rewards["attacker_0"] += (
+                    reward_A_progress 
+                    + reward_A_distance_penalty 
+                    + reward_A_tracking 
+                    + reward_A_time 
+                    + reward_A_ramming 
+                    + reward_A_z_penalty       # 更新后的高度惩罚
+                    + reward_A_ground_warning 
+                    + reward_A_energy_loss     # 新增的能量机动惩罚
+                )
 
             # [角色 2] 目标机 (Evader) 奖励结算
             if "evader_0" in actions and not terminations["evader_0"]:
@@ -791,12 +802,12 @@ class Drone1v1MARLEnv(MultiAgentEnv):
             for agent, state in zip(["attacker_0", "evader_0"], [new_attacker_state, new_evader_state]):
                 if agent in actions and not terminations[agent]: # 只有这个 agent 还在计分板上，才对它进行边界惩罚！
                     if state[2] < 10:
-                        total_rewards[agent] -= 100.0
+                        total_rewards[agent] -= 1000.0
                         terminations[agent] = True
                         infos[agent]["reason"] = "ground_crash"
                         crash_occurred = True 
                     elif state[2] > 5000.0:
-                        total_rewards[agent] -= 100.0
+                        total_rewards[agent] -= 1000.0
                         terminations[agent] = True
                         infos[agent]["reason"] = "out_of_bounds" 
                         crash_occurred = True
