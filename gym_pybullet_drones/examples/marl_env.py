@@ -173,6 +173,15 @@ class Drone1v1MARLEnv(MultiAgentEnv):
         attacker_pos = self.pyb_env._getDroneStateVector(0)[0:3]
         evader_pos = self.pyb_env._getDroneStateVector(1)[0:3]
         self.prev_dist = np.linalg.norm(attacker_pos - evader_pos)
+
+        # ================= 课程学习 Stage 2：随机化目标机盘旋 =================
+        # 随机决定本回合目标机的机动策略。
+        # 概率分布：40% 直飞，30% 左转，30% 右转
+        self.evader_maneuver = np.random.choice(
+            ["straight", "turn_left", "turn_right"], 
+            p=[0.4, 0.3, 0.3]
+        )
+        # ====================================================================
     
         obs_dict = {
             "attacker_0": self._compute_obs("attacker_0"),
@@ -360,23 +369,17 @@ class Drone1v1MARLEnv(MultiAgentEnv):
         attacker_state_init = self.pyb_env._getDroneStateVector(attacker_id)
         evader_state_init = self.pyb_env._getDroneStateVector(evader_id)
 
-        # ================= Phase 1 强制干预：全局锁定目标机平飞 =================
-        if "evader_0" in actions:
-            actions["evader_0"] = 0  # 无视任何距离和告警，永远执行动作 0 (匀速直飞)
-        # =====================================================================
-
         dist = np.linalg.norm(attacker_state_init[0:3] - evader_state_init[0:3])
         current_micro_dist = dist
 
         self.macro_step += 1 # 新增：每次 AI 下达指令，宏观步数推进 1 步
 
-        # ================== 新增：绝对信任的本地物理账本 ==================
+        # 绝对信任的本地物理账本
         # 彻底抛弃每帧从 PyBullet 读取速度的逻辑，防止无人机的空气阻力污染数据！
         trusted_states = {
             "attacker_0": {"pos": attacker_state_init[0:3].copy(), "vel": attacker_state_init[10:13].copy()},
             "evader_0":   {"pos": evader_state_init[0:3].copy(),   "vel": evader_state_init[10:13].copy()}
         }
-        # ==================================================================
 
         for _ in range(dynamic_frame_skip):           
             self.pyb_env.step(np.zeros((2, 4)))
@@ -389,6 +392,20 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 pyb_id = self.pyb_env.DRONE_IDS[i] if hasattr(self.pyb_env, 'DRONE_IDS') else self.pyb_env.drone_ids[i]
                 action_int = int(actions[agent])
                 n_x_cmd, n_n_cmd, mu_cmd = self.bfm_action_mapping[action_int]
+
+                # ================= Phase 2 干预：注入完美的水平盘旋 =================
+                if agent == "evader_0":
+                    if self.evader_maneuver == "turn_left":
+                        n_x_cmd = 0.0          # 保持匀速
+                        n_n_cmd = 2.0          # 2G 法向过载
+                        mu_cmd = np.pi / 3.0   # 60度滚转 (保持高度不掉)
+                    elif self.evader_maneuver == "turn_right":
+                        n_x_cmd = 0.0
+                        n_n_cmd = 2.0
+                        mu_cmd = -np.pi / 3.0  # 向右 60度滚转
+                    else:
+                        n_x_cmd, n_n_cmd, mu_cmd = self.bfm_action_mapping[0] # 直飞
+                # ====================================================================
                 
                 current_max_speed = self.MAX_SPEED
                 current_max_g = self.MAX_G
@@ -528,21 +545,60 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 self.last_draw_pos = cur_attacker_pos.copy()
                 self.last_target_draw_pos = cur_evader_pos.copy()
 
-                # HUD 文字与几何计算
-                dist_cam = np.linalg.norm(cur_attacker_pos - cur_evader_pos)
-                dx = cur_attacker_pos[0] - cur_evader_pos[0]
-                dy = cur_attacker_pos[1] - cur_evader_pos[1]
-                drone_angle = np.degrees(np.arctan2(dy, dx))
+                # ================= HUD 文字与战术几何计算 =================
+                # 1. 获取双方实时状态
+                state_A = self.pyb_env._getDroneStateVector(attacker_id)
+                state_E = self.pyb_env._getDroneStateVector(evader_id)
                 
-                vel_norm = np.linalg.norm(self.pyb_env._getDroneStateVector(attacker_id)[10:13])
-                hud_text = f"Dist:{dist_cam:.1f}m | ATA:{drone_angle:.0f}deg | Vel:{vel_norm:.1f}m/s"
+                pos_A, vel_A = state_A[0:3], state_A[10:13]
+                pos_E, vel_E = state_E[0:3], state_E[10:13]
                 
-                # 获取主机 ID，用于绑定 HUD 文本跟随
-                drone_pyb_id = self.pyb_env.DRONE_IDS[0] if hasattr(self.pyb_env, 'DRONE_IDS') else self.pyb_env.drone_ids[0]
-                if self.hud_text_id == -1:
-                    self.hud_text_id = p.addUserDebugText(hud_text, [0, 0, 0.8], textColorRGB=[0, 0, 0], textSize=1.5, parentObjectUniqueId=drone_pyb_id, physicsClientId=self.pyb_env.CLIENT)
+                alt_A, speed_A = pos_A[2], np.linalg.norm(vel_A)
+                alt_E, speed_E = pos_E[2], np.linalg.norm(vel_E)
+
+                # 2. 计算真实的战术夹角
+                los_vec = pos_E - pos_A
+                dist_cam = np.linalg.norm(los_vec)
+                los_dir = los_vec / (dist_cam + 1e-6)
+                
+                # 提取主机真实机头指向 (通过四元数转旋转矩阵的第一列)
+                rot_mat_A = p.getMatrixFromQuaternion(state_A[3:7])
+                forward_A = np.array([rot_mat_A[0], rot_mat_A[3], rot_mat_A[6]])
+                
+                # 真实 ATA (天线偏角): 机头指向与视线的夹角
+                ata_deg = np.degrees(np.arccos(np.clip(np.dot(forward_A, los_dir), -1.0, 1.0)))
+                
+                # 碰撞角偏差 (Collision Error): 相对速度与视线的夹角
+                rel_vel = vel_A - vel_E
+                rel_vel_dir = rel_vel / (np.linalg.norm(rel_vel) + 1e-6)
+                collision_err_deg = np.degrees(np.arccos(np.clip(np.dot(rel_vel_dir, los_dir), -1.0, 1.0)))
+
+                # 提取目标机滚转角 (观察 2G 盘旋是否保持在完美的 60 度)
+                roll_E_deg = np.degrees(state_E[7])
+
+                # 3. 构建多行 HUD 文本
+                hud_A_text = f"[ATTACKER]\nDist: {dist_cam:.1f}m\nSpd:  {speed_A:.1f}m/s\nAlt:  {alt_A:.1f}m\nATA:  {ata_deg:.1f}*\nCollErr: {collision_err_deg:.1f}*"
+                hud_E_text = f"[TARGET]\nSpd:  {speed_E:.1f}m/s\nAlt:  {alt_E:.1f}m\nRoll: {roll_E_deg:.1f}*"
+                
+                # 4. 绑定到相应的飞机实体上
+                drone_id_A = self.pyb_env.DRONE_IDS[0] if hasattr(self.pyb_env, 'DRONE_IDS') else self.pyb_env.drone_ids[0]
+                drone_id_E = self.pyb_env.DRONE_IDS[1] if hasattr(self.pyb_env, 'DRONE_IDS') else self.pyb_env.drone_ids[1]
+
+                # 初始化两个 HUD 的 ID 占位符 (利用 getattr 避免在 __init__ 中修改)
+                if not hasattr(self, 'hud_A_id'): self.hud_A_id = -1
+                if not hasattr(self, 'hud_E_id'): self.hud_E_id = -1
+
+                # 绘制主机 HUD (深蓝色字体，放在飞机上方 1.5 米)
+                if self.hud_A_id == -1:
+                    self.hud_A_id = p.addUserDebugText(hud_A_text, [0, 0, 1.5], textColorRGB=[0.1, 0.3, 0.8], textSize=1.2, parentObjectUniqueId=drone_id_A, physicsClientId=self.pyb_env.CLIENT)
                 else:
-                    self.hud_text_id = p.addUserDebugText(hud_text, [0, 0, 0.8], textColorRGB=[0, 0, 0], textSize=1.5, parentObjectUniqueId=drone_pyb_id, replaceItemUniqueId=self.hud_text_id, physicsClientId=self.pyb_env.CLIENT)
+                    self.hud_A_id = p.addUserDebugText(hud_A_text, [0, 0, 1.5], textColorRGB=[0.1, 0.3, 0.8], textSize=1.2, parentObjectUniqueId=drone_id_A, replaceItemUniqueId=self.hud_A_id, physicsClientId=self.pyb_env.CLIENT)
+                
+                # 绘制目标机 HUD (深红色字体，放在飞机上方 1.5 米)
+                if self.hud_E_id == -1:
+                    self.hud_E_id = p.addUserDebugText(hud_E_text, [0, 0, 1.5], textColorRGB=[0.8, 0.2, 0.2], textSize=1.2, parentObjectUniqueId=drone_id_E, physicsClientId=self.pyb_env.CLIENT)
+                else:
+                    self.hud_E_id = p.addUserDebugText(hud_E_text, [0, 0, 1.5], textColorRGB=[0.8, 0.2, 0.2], textSize=1.2, parentObjectUniqueId=drone_id_E, replaceItemUniqueId=self.hud_E_id, physicsClientId=self.pyb_env.CLIENT)
                 
                 # 视线连线
                 p.addUserDebugLine(cur_attacker_pos, cur_evader_pos, [0, 1, 1], 1.5, 1.5 / self.CTRL_FREQ, physicsClientId=self.pyb_env.CLIENT)
