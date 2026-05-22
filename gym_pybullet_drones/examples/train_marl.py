@@ -116,8 +116,8 @@ if __name__ == "__main__":
         # 5. 神经网络结构 (Net Arch)
         .training(
             model={"fcnet_hiddens": [256, 256, 128], "fcnet_activation": "relu"},
-            train_batch_size=8192,
-            minibatch_size=1024,
+            train_batch_size=16384,
+            minibatch_size=2048,
             lr=3e-4,
             entropy_coeff=0.1,
             clip_param=0.2, # 限制价值函数的截断
