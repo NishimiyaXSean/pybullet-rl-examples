@@ -120,9 +120,11 @@ if __name__ == "__main__":
             minibatch_size=1024,
             lr=3e-4,
             entropy_coeff=0.1,
-            # 限制价值函数的截断 (Clip Param)
-            clip_param=0.2,
+            clip_param=0.2, # 限制价值函数的截断
             vf_clip_param=10.0,
+            gamma=0.995,          # 折扣因子 (默认 0.99，越大越看重长期收益)
+            lambda_=0.95,        # GAE 参数 (默认 0.95)
+            kl_coeff=0.2,        # KL 散度惩罚系数 (默认 0.2)
         )
     )
 
@@ -142,7 +144,7 @@ if __name__ == "__main__":
     print("="*45 + "\n")
 
     # 加载旧模型以继续训练
-    OLD_CHECKPOINT = os.path.abspath("./marl_runs/run_0521_2357/checkpoints/checkpoint_best_iter_135" )
+    OLD_CHECKPOINT = os.path.abspath("./marl_runs/run_0522_1018/checkpoints/checkpoint_best_iter_085" )
 
     if os.path.exists(OLD_CHECKPOINT):
         print(f"正在恢复旧模型记忆: {OLD_CHECKPOINT}")

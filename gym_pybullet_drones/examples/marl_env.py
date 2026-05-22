@@ -174,6 +174,9 @@ class Drone1v1MARLEnv(MultiAgentEnv):
         evader_pos = self.pyb_env._getDroneStateVector(1)[0:3]
         self.prev_dist = np.linalg.norm(attacker_pos - evader_pos)
 
+        # 记录上一帧的 ATA 余弦值，用于计算趋势
+        self.last_cos_ata_A = 1.0
+
         # ================= 课程学习 Stage 2：随机化目标机盘旋 =================
         # 随机决定本回合目标机的机动策略。
         # 概率分布：40% 直飞，30% 左转，30% 右转
@@ -576,29 +579,49 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 # 提取目标机滚转角 (观察 2G 盘旋是否保持在完美的 60 度)
                 roll_E_deg = np.degrees(state_E[7])
 
-                # 3. 构建多行 HUD 文本
-                hud_A_text = f"[ATTACKER]\nDist: {dist_cam:.1f}m\nSpd:  {speed_A:.1f}m/s\nAlt:  {alt_A:.1f}m\nATA:  {ata_deg:.1f}*\nCollErr: {collision_err_deg:.1f}*"
-                hud_E_text = f"[TARGET]\nSpd:  {speed_E:.1f}m/s\nAlt:  {alt_E:.1f}m\nRoll: {roll_E_deg:.1f}*"
+                # 3. 构建分离的多行文本列表 (避开 \n 重叠 Bug)
+                hud_A_lines = [
+                    "[ATTACKER]",
+                    f"Dist: {dist_cam:.1f}m",
+                    f"Spd:  {speed_A:.1f}m/s",
+                    f"Alt:  {alt_A:.1f}m",
+                    f"ATA:  {ata_deg:.1f}*",
+                    f"CollErr: {collision_err_deg:.1f}*"
+                ]
                 
-                # 4. 绑定到相应的飞机实体上
+                hud_E_lines = [
+                    "[TARGET]",
+                    f"Spd:  {speed_E:.1f}m/s",
+                    f"Alt:  {alt_E:.1f}m",
+                    f"Roll: {roll_E_deg:.1f}*"
+                ]
+                
+                # 4. 绑定实体与行高设定
                 drone_id_A = self.pyb_env.DRONE_IDS[0] if hasattr(self.pyb_env, 'DRONE_IDS') else self.pyb_env.drone_ids[0]
                 drone_id_E = self.pyb_env.DRONE_IDS[1] if hasattr(self.pyb_env, 'DRONE_IDS') else self.pyb_env.drone_ids[1]
 
-                # 初始化两个 HUD 的 ID 占位符 (利用 getattr 避免在 __init__ 中修改)
-                if not hasattr(self, 'hud_A_id'): self.hud_A_id = -1
-                if not hasattr(self, 'hud_E_id'): self.hud_E_id = -1
+                # 初始化 ID 列表占位符，保持追踪以实现平滑替换
+                if not hasattr(self, 'hud_A_ids'): self.hud_A_ids = [-1] * len(hud_A_lines)
+                if not hasattr(self, 'hud_E_ids'): self.hud_E_ids = [-1] * len(hud_E_lines)
 
-                # 绘制主机 HUD (深蓝色字体，放在飞机上方 1.5 米)
-                if self.hud_A_id == -1:
-                    self.hud_A_id = p.addUserDebugText(hud_A_text, [0, 0, 1.5], textColorRGB=[0.1, 0.3, 0.8], textSize=1.2, parentObjectUniqueId=drone_id_A, physicsClientId=self.pyb_env.CLIENT)
-                else:
-                    self.hud_A_id = p.addUserDebugText(hud_A_text, [0, 0, 1.5], textColorRGB=[0.1, 0.3, 0.8], textSize=1.2, parentObjectUniqueId=drone_id_A, replaceItemUniqueId=self.hud_A_id, physicsClientId=self.pyb_env.CLIENT)
+                line_spacing = 0.6  # 行距设置，可视情况适当调大
+                base_z_offset = 3.0 # 起始高度 (放在飞机正上方 3.0 米处开始往下排)
+
+                # 逐行绘制主机 HUD
+                for i, text in enumerate(hud_A_lines):
+                    z_pos = base_z_offset - i * line_spacing
+                    if self.hud_A_ids[i] == -1:
+                        self.hud_A_ids[i] = p.addUserDebugText(text, [0, 0, z_pos], textColorRGB=[0.1, 0.4, 1.0], textSize=1.5, parentObjectUniqueId=drone_id_A, physicsClientId=self.pyb_env.CLIENT)
+                    else:
+                        self.hud_A_ids[i] = p.addUserDebugText(text, [0, 0, z_pos], textColorRGB=[0.1, 0.4, 1.0], textSize=1.5, parentObjectUniqueId=drone_id_A, replaceItemUniqueId=self.hud_A_ids[i], physicsClientId=self.pyb_env.CLIENT)
                 
-                # 绘制目标机 HUD (深红色字体，放在飞机上方 1.5 米)
-                if self.hud_E_id == -1:
-                    self.hud_E_id = p.addUserDebugText(hud_E_text, [0, 0, 1.5], textColorRGB=[0.8, 0.2, 0.2], textSize=1.2, parentObjectUniqueId=drone_id_E, physicsClientId=self.pyb_env.CLIENT)
-                else:
-                    self.hud_E_id = p.addUserDebugText(hud_E_text, [0, 0, 1.5], textColorRGB=[0.8, 0.2, 0.2], textSize=1.2, parentObjectUniqueId=drone_id_E, replaceItemUniqueId=self.hud_E_id, physicsClientId=self.pyb_env.CLIENT)
+                # 逐行绘制目标机 HUD
+                for i, text in enumerate(hud_E_lines):
+                    z_pos = base_z_offset - i * line_spacing
+                    if self.hud_E_ids[i] == -1:
+                        self.hud_E_ids[i] = p.addUserDebugText(text, [0, 0, z_pos], textColorRGB=[1.0, 0.2, 0.2], textSize=1.5, parentObjectUniqueId=drone_id_E, physicsClientId=self.pyb_env.CLIENT)
+                    else:
+                        self.hud_E_ids[i] = p.addUserDebugText(text, [0, 0, z_pos], textColorRGB=[1.0, 0.2, 0.2], textSize=1.5, parentObjectUniqueId=drone_id_E, replaceItemUniqueId=self.hud_E_ids[i], physicsClientId=self.pyb_env.CLIENT)
                 
                 # 视线连线
                 p.addUserDebugLine(cur_attacker_pos, cur_evader_pos, [0, 1, 1], 1.5, 1.5 / self.CTRL_FREQ, physicsClientId=self.pyb_env.CLIENT)
@@ -739,6 +762,10 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                     # cos_collision 衡量的是“相对速度”是否指向目标，这是直线拦截的核心！
                     cos_collision = np.clip(np.dot(rel_vel_dir, los_dir), -1.0, 1.0)
 
+                    # 计算 ATA 余弦值的变化率 (Delta)
+                    delta_cos_ata = cos_ata_attacker - getattr(self, 'last_cos_ata_A', cos_ata_attacker)
+                    self.last_cos_ata_A = cos_ata_attacker
+
                     if cos_ata_attacker > 0:
                         # [前半球]：目标在我的视野前方
                         if cos_aa_attacker > 0:
@@ -750,10 +777,24 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                             # 降低对机头指向的要求，大幅提高对碰撞航线的奖励，逼迫它打提前量！
                             reward_A_tracking = (cos_ata_attacker * 0.1 + cos_collision * 0.8) * dt  # 融合提前量奖励
                     else:
-                        # [后半球]：目标跑到背后————严厉的过冲惩罚
-                        # cos_ata_attacker 为负数，偏离越远扣分越狠。
-                        # 权重设为 4.0，强迫它一旦飞过头，必须宁可承受掉能量的惩罚，也要立刻交出滚转和拉升来调转机头！
-                        reward_A_tracking = cos_ata_attacker * 4.0 * dt
+                        # ================= Phase 2 修复：打破局部最优 =================
+                        # [后半球]：目标跑到背后
+                        # 1. 削弱静态惩罚，让它不至于“痛到不敢动”
+                        static_penalty = cos_ata_attacker * 1.5 * dt  # 从 4.0 降到 1.5
+                        
+                        # 2. 引入强大的“趋势奖励”
+                        # 如果 delta_cos_ata > 0，说明机头正在往目标方向拉回来
+                        trend_reward = 0.0
+                        if delta_cos_ata > 0:
+                            # 权重给高一点，因为单帧的 delta 数值非常小
+                            trend_reward = delta_cos_ata * 20.0 
+                            
+                        # 3. 抵消部分能量惩罚：当处于劣势且努力转弯时，暂时豁免高G惩罚
+                        if n_n > 2.0 and delta_cos_ata > 0:
+                            reward_A_energy_loss *= 0.2  # 打个2折，鼓励大过载掉头
+                            
+                        reward_A_tracking = static_penalty + trend_reward
+                        # ===============================================================
                 
                 # 单帧结算
                 total_rewards["attacker_0"] += (
