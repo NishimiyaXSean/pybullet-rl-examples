@@ -579,49 +579,30 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 # 提取目标机滚转角 (观察 2G 盘旋是否保持在完美的 60 度)
                 roll_E_deg = np.degrees(state_E[7])
 
-                # 3. 构建分离的多行文本列表 (避开 \n 重叠 Bug)
-                hud_A_lines = [
-                    "[ATTACKER]",
-                    f"Dist: {dist_cam:.1f}m",
-                    f"Spd:  {speed_A:.1f}m/s",
-                    f"Alt:  {alt_A:.1f}m",
-                    f"ATA:  {ata_deg:.1f}*",
-                    f"CollErr: {collision_err_deg:.1f}*"
-                ]
-                
-                hud_E_lines = [
-                    "[TARGET]",
-                    f"Spd:  {speed_E:.1f}m/s",
-                    f"Alt:  {alt_E:.1f}m",
-                    f"Roll: {roll_E_deg:.1f}*"
-                ]
-                
-                # 4. 绑定实体与行高设定
+                # 3. 极简单行字符串设计 (杜绝任何多行重叠隐患)
+                # 主机：距离、ATA、碰撞偏差角
+                hud_A_text = f"[A] Dist:{dist_cam:.0f}m | Spd:{speed_A:.0f}m/s | ATA:{ata_deg:.1f}* | Coll:{collision_err_deg:.1f}*"
+                # 目标机：空速、滚转角 (用来监控盘旋靶是否正常飞)
+                hud_E_text = f"[E] Spd:{speed_E:.0f}m/s | Roll:{roll_E_deg:.0f}*"
+
+                # 4. 绑定与绘制
                 drone_id_A = self.pyb_env.DRONE_IDS[0] if hasattr(self.pyb_env, 'DRONE_IDS') else self.pyb_env.drone_ids[0]
                 drone_id_E = self.pyb_env.DRONE_IDS[1] if hasattr(self.pyb_env, 'DRONE_IDS') else self.pyb_env.drone_ids[1]
 
-                # 初始化 ID 列表占位符，保持追踪以实现平滑替换
-                if not hasattr(self, 'hud_A_ids'): self.hud_A_ids = [-1] * len(hud_A_lines)
-                if not hasattr(self, 'hud_E_ids'): self.hud_E_ids = [-1] * len(hud_E_lines)
+                # 初始化 ID 占位符
+                if not hasattr(self, 'hud_A_id'): self.hud_A_id = -1
+                if not hasattr(self, 'hud_E_id'): self.hud_E_id = -1
 
-                line_spacing = 0.6  # 行距设置，可视情况适当调大
-                base_z_offset = 3.0 # 起始高度 (放在飞机正上方 3.0 米处开始往下排)
-
-                # 逐行绘制主机 HUD
-                for i, text in enumerate(hud_A_lines):
-                    z_pos = base_z_offset - i * line_spacing
-                    if self.hud_A_ids[i] == -1:
-                        self.hud_A_ids[i] = p.addUserDebugText(text, [0, 0, z_pos], textColorRGB=[0.1, 0.4, 1.0], textSize=1.5, parentObjectUniqueId=drone_id_A, physicsClientId=self.pyb_env.CLIENT)
-                    else:
-                        self.hud_A_ids[i] = p.addUserDebugText(text, [0, 0, z_pos], textColorRGB=[0.1, 0.4, 1.0], textSize=1.5, parentObjectUniqueId=drone_id_A, replaceItemUniqueId=self.hud_A_ids[i], physicsClientId=self.pyb_env.CLIENT)
+                # 将文字挂在飞机正上方 2.5 米处
+                if self.hud_A_id == -1:
+                    self.hud_A_id = p.addUserDebugText(hud_A_text, [0, 0, 2.5], textColorRGB=[0.1, 0.4, 1.0], textSize=1.2, parentObjectUniqueId=drone_id_A, physicsClientId=self.pyb_env.CLIENT)
+                else:
+                    self.hud_A_id = p.addUserDebugText(hud_A_text, [0, 0, 2.5], textColorRGB=[0.1, 0.4, 1.0], textSize=1.2, parentObjectUniqueId=drone_id_A, replaceItemUniqueId=self.hud_A_id, physicsClientId=self.pyb_env.CLIENT)
                 
-                # 逐行绘制目标机 HUD
-                for i, text in enumerate(hud_E_lines):
-                    z_pos = base_z_offset - i * line_spacing
-                    if self.hud_E_ids[i] == -1:
-                        self.hud_E_ids[i] = p.addUserDebugText(text, [0, 0, z_pos], textColorRGB=[1.0, 0.2, 0.2], textSize=1.5, parentObjectUniqueId=drone_id_E, physicsClientId=self.pyb_env.CLIENT)
-                    else:
-                        self.hud_E_ids[i] = p.addUserDebugText(text, [0, 0, z_pos], textColorRGB=[1.0, 0.2, 0.2], textSize=1.5, parentObjectUniqueId=drone_id_E, replaceItemUniqueId=self.hud_E_ids[i], physicsClientId=self.pyb_env.CLIENT)
+                if self.hud_E_id == -1:
+                    self.hud_E_id = p.addUserDebugText(hud_E_text, [0, 0, 2.5], textColorRGB=[1.0, 0.2, 0.2], textSize=1.2, parentObjectUniqueId=drone_id_E, physicsClientId=self.pyb_env.CLIENT)
+                else:
+                    self.hud_E_id = p.addUserDebugText(hud_E_text, [0, 0, 2.5], textColorRGB=[1.0, 0.2, 0.2], textSize=1.2, parentObjectUniqueId=drone_id_E, replaceItemUniqueId=self.hud_E_id, physicsClientId=self.pyb_env.CLIENT)
                 
                 # 视线连线
                 p.addUserDebugLine(cur_attacker_pos, cur_evader_pos, [0, 1, 1], 1.5, 1.5 / self.CTRL_FREQ, physicsClientId=self.pyb_env.CLIENT)
