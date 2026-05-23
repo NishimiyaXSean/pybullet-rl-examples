@@ -2,14 +2,16 @@ import numpy as np
 import gymnasium as gym
 import pybullet as p
 from ray.rllib.env.multi_agent_env import MultiAgentEnv
+import time
 
 from gym_pybullet_drones.envs.CtrlAviary import CtrlAviary
 from gym_pybullet_drones.utils.enums import DroneModel, Physics
+from tacview_logger import TacviewLogger
 
 class Drone1v1MARLEnv(MultiAgentEnv):
     metadata = {"render_modes": ["human"], "name": "drone_1v1_v0"}
 
-    def __init__(self, gui=False):
+    def __init__(self, gui=False, record_tacview=False):
         super().__init__()
         # 1. 明确定义智能体身份 (PettingZoo 规范核心)
         self.possible_agents = ["attacker_0", "evader_0"]
@@ -89,6 +91,13 @@ class Drone1v1MARLEnv(MultiAgentEnv):
         self.last_draw_pos = np.zeros(3)
         self.last_target_draw_pos = np.zeros(3)
         self.cam_pos = np.zeros(3)
+
+        # 初始化 Tacview 记录器
+        self.record_tacview = record_tacview
+        if self.record_tacview:
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
+            log_filename = f"drone_eval_{timestamp}.txt.acmi"
+            self.tacview_logger = TacviewLogger(filename=log_filename)
 
     def reset(self, seed=None, options=None):
         """
@@ -246,6 +255,18 @@ class Drone1v1MARLEnv(MultiAgentEnv):
             self.radar_marker_A = p.createMultiBody(baseMass=0, baseVisualShapeIndex=v_shape_A, basePosition=attacker_pos, physicsClientId=self.pyb_env.CLIENT)
             self.radar_marker_E = p.createMultiBody(baseMass=0, baseVisualShapeIndex=v_shape_E, basePosition=evader_pos, physicsClientId=self.pyb_env.CLIENT)
             # ==========================================================
+
+        # 在回合开始时重置并启动录制
+        if getattr(self, 'record_tacview', False):
+            # 如果上一次没关干净，先关掉
+            if hasattr(self, 'tacview_logger'):
+                self.tacview_logger.close()
+            
+            # 开启新一轮录制
+            self.tacview_logger.start()
+            
+            # 记录第 0 帧 (初始状态)
+            self._record_tacview_frame(time_sec=0.0)
 
         return obs_dict, info_dict
     
@@ -537,6 +558,19 @@ class Drone1v1MARLEnv(MultiAgentEnv):
             raw_micro_delta = new_dist - current_micro_dist
             micro_delta_dist = np.clip(raw_micro_delta, -20.0, 20.0) 
             current_micro_dist = new_dist
+
+            # 更新 gym-pybullet-drones 的内置缓存...
+            if hasattr(self.pyb_env, '_updateAndStoreKinematicInformation'):
+                self.pyb_env._updateAndStoreKinematicInformation()
+
+            # ======== 新增：记录 Tacview 帧 ========
+            if getattr(self, 'record_tacview', False):
+                current_time = self.step_counter / self.CTRL_FREQ
+                self._record_tacview_frame(time_sec=current_time)
+            # =======================================
+
+            # 重新提取一次绝对干净的物理状态...
+            new_attacker_state = self.pyb_env._getDroneStateVector(attacker_id)
 
             # 1:1 真实物理平滑渲染与电影级运镜
             if self.pyb_env.GUI:
@@ -986,4 +1020,19 @@ class Drone1v1MARLEnv(MultiAgentEnv):
         terminations["__all__"] = any(terminations.values()) if terminations else True
         truncations["__all__"] = any(truncations.values()) if truncations else True
 
+        if terminations["__all__"] or truncations["__all__"]:
+            if getattr(self, 'record_tacview', False):
+                self.tacview_logger.close()
+
         return observations, total_rewards, terminations, truncations, infos
+    
+    def _record_tacview_frame(self, time_sec):
+        """内部辅助函数：提取状态并传递给 Logger"""
+        # _getDroneStateVector 返回的 19 维向量中：[0:3]是坐标XYZ, [7:10]是欧拉角RPY
+        attacker_state_vec = self.pyb_env._getDroneStateVector(0)
+        evader_state_vec = self.pyb_env._getDroneStateVector(1)
+        
+        state_A = {'pos': attacker_state_vec[0:3], 'rpy': attacker_state_vec[7:10]}
+        state_E = {'pos': evader_state_vec[0:3], 'rpy': evader_state_vec[7:10]}
+        
+        self.tacview_logger.log_frame(time_sec, state_A, state_E)
