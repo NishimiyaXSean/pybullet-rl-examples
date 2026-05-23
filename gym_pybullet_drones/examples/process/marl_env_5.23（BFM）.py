@@ -56,25 +56,31 @@ class Drone1v1MARLEnv(MultiAgentEnv):
         self.EVADER_SPEED_COEFF = 0.625  # 速度系数 (400 * 0.625 = 250 m/s)
         self.EVADER_G_COEFF = 0.555      # 过载系数 (9.0 * 0.555 ≈ 5.0 G)
 
-        # 动作空间：3维连续变量 [-1.0, 1.0]
-        # Action[0]: 切向加速度 (控制推力/减速板)
-        # Action[1]: 法向过载 (控制俯仰拉杆)
-        # Action[2]: 滚转角 (控制副翼)
+        # BFM 动作库: {动作编号 : (切向过载 n_x, 法向过载 n_n, 滚转角 mu)}
+        self.bfm_action_mapping = {
+            0:  ( 0,  1,  0.0),            # a1: 匀速直飞
+            1:  ( 2,  1,  0.0),            # a2: 加速直飞
+            2:  (-2,  1,  0.0),            # a3: 减速直飞
+            3:  ( 0,  8,  0.0),            # a4: 满G跃升
+            4:  ( 0, -2,  0.0),            # a5: 缓和俯冲 (修正不合理的 -8G)
+            5:  ( 0,  8,  np.pi / 2.2),    # a6: 极左转跃升 (约 81度，超大过载转弯)
+            6:  ( 0, -2, -np.pi / 2.2),    # a7: 右转俯冲 
+            7:  ( 0,  8, -np.pi / 2.2),    # a8: 极右转跃升
+            8:  ( 0, -2,  np.pi / 2.2),    # a9: 左转俯冲
+            9:  ( 0,  6, -np.pi / 2.0),    # a10: 纯右转盘旋 (90度滚转)
+            10: ( 0,  6,  np.pi / 2.0)     # a11: 纯左转盘旋
+        }
+
+        # 3. 字典化的观测空间与动作空间
+        # 动作空间：两者均为 11 维离散动作 (BFM)
         self.action_spaces = {
-            agent: gym.spaces.Box(low=-1.0, high=1.0, shape=(3,), dtype=np.float32)
+            agent: gym.spaces.Discrete(11) 
             for agent in self.possible_agents
         }
         
-        # MAPPO 专属 Dict 观测空间
-        # 假设全局状态包含2架飞机的绝对物理参数：位置(3)+四元数(4)+线速度(3)+角速度(3) = 13维/架
-        # 1v1 的总全局维度为 26。未来如果是 2v2，这里相应增加即可。
-        self.GLOBAL_STATE_DIM = 26 
-        
+        # 观测空间：各自的第一人称视角 (原为19维，可根据后续设计调整)
         self.observation_spaces = {
-            agent: gym.spaces.Dict({
-                "obs": gym.spaces.Box(low=-1.0, high=1.0, shape=(19,), dtype=np.float32),
-                "global_state": gym.spaces.Box(low=-1.0, high=1.0, shape=(self.GLOBAL_STATE_DIM,), dtype=np.float32)
-            })
+            agent: gym.spaces.Box(low=-1.0, high=1.0, shape=(19,), dtype=np.float32)
             for agent in self.possible_agents
         }
 
@@ -92,36 +98,6 @@ class Drone1v1MARLEnv(MultiAgentEnv):
             timestamp = time.strftime("%Y%m%d_%H%M%S")
             log_filename = f"drone_eval_{timestamp}.txt.acmi"
             self.tacview_logger = TacviewLogger(filename=log_filename)
-
-    def _compute_global_state(self):
-        """
-        为 MAPPO 的 Critic 提取全知全能的全局状态 (Global State)
-        """
-        global_state = []
-        
-        # 遍历所有可能存在的飞机 (注意使用 self.possible_agents 保证顺序和维度固定)
-        for i, agent in enumerate(self.possible_agents):
-            if agent in self.agents:
-                # 如果飞机存活，提取其绝对物理状态
-                pyb_id = self.pyb_env.DRONE_IDS[i] if hasattr(self.pyb_env, 'DRONE_IDS') else self.pyb_env.drone_ids[i]
-                state_vec = self.pyb_env._getDroneStateVector(pyb_id)
-                
-                # 提取: 绝对位置(3), 四元数姿态(4), 绝对速度(3), 绝对角速度(3)
-                pos = state_vec[0:3] / 5000.0          # 归一化位置
-                quat = state_vec[3:7]                  # 四元数本身就在 [-1, 1]
-                vel = state_vec[10:13] / self.MAX_SPEED # 归一化速度
-                ang_vel = state_vec[13:16] / np.pi      # 归一化角速度
-                
-                agent_state = np.concatenate([pos, quat, vel, ang_vel])
-            else:
-                # 填充死亡零向量 (Padding)
-                # 在 N vs M 中，如果有飞机被击落，必须用全 0 占位以保证神经网络输入维度不变
-                agent_state = np.zeros(13, dtype=np.float32)
-                
-            global_state.append(agent_state)
-            
-        # 拼接成一个展平的一维大向量
-        return np.concatenate(global_state).astype(np.float32)
 
     def reset(self, seed=None, options=None):
         """
@@ -219,13 +195,9 @@ class Drone1v1MARLEnv(MultiAgentEnv):
         )
         # ====================================================================
     
-        global_state_array = self._compute_global_state()
         obs_dict = {
-            agent: {
-                "obs": self._compute_obs(agent),
-                "global_state": global_state_array
-            }
-            for agent in self.agents
+            "attacker_0": self._compute_obs("attacker_0"),
+            "evader_0": self._compute_obs("evader_0")
         }
         
         info_dict = {agent: {} for agent in self.agents}
@@ -459,21 +431,8 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                     continue
 
                 pyb_id = self.pyb_env.DRONE_IDS[i] if hasattr(self.pyb_env, 'DRONE_IDS') else self.pyb_env.drone_ids[i]
-                
-                # ================= 新增：连续动作解包与线性映射 =================
-                # 确保获取的是 3 维 NumPy 数组，并且限制在 [-1, 1] 之间以防异常值
-                action_vec = np.clip(actions[agent], -1.0, 1.0)
-                
-                # 1. 切向过载 (n_x): 映射到 [-2.0, 2.0]
-                n_x_cmd = action_vec[0] * 2.0
-                
-                # 2. 法向过载 (n_n): 映射到 [MIN_G, MAX_G]
-                # 公式: MIN + (MAX - MIN) * (val + 1) / 2
-                n_n_cmd = self.MIN_G + (self.MAX_G - self.MIN_G) * (action_vec[1] + 1.0) / 2.0
-                
-                # 3. 滚转角 (mu): 映射到 [-180度, 180度] 即 [-pi, pi]
-                mu_cmd = action_vec[2] * np.pi
-                # ================================================================
+                action_int = int(actions[agent])
+                n_x_cmd, n_n_cmd, mu_cmd = self.bfm_action_mapping[action_int]
 
                 # ================= Phase 2 干预：注入完美的水平盘旋 =================
                 if agent == "evader_0":
@@ -1041,22 +1000,14 @@ class Drone1v1MARLEnv(MultiAgentEnv):
             if not terminations.get("evader_0", True) and "evader_0" in total_rewards:
                 total_rewards["evader_0"] += 3000.0
         
-        global_state_array = self._compute_global_state()
-        observations = {} # 计算最新的观测值
-        for agent in self.agents: # 注意：此时 self.agents 已经清理过了死掉的飞机
-            observations[agent] = {
-                "obs": self._compute_obs(agent),
-                "global_state": global_state_array
-            }
-        
-        # 对于刚刚在这一帧死亡的飞机，依然需要给它发送最后一次信息（包含死亡判定）
-        for agent in self.possible_agents:
-            if terminations[agent] or truncations[agent]:
-                if agent not in observations:
-                    observations[agent] = {
-                        "obs": np.zeros(19, dtype=np.float32),
-                        "global_state": global_state_array # 死亡瞬间依然让 Critic 看到全局
-                    }
+        # 计算最新的观测值
+        observations = {}
+        for agent in self.agents:
+            if not terminations[agent]:
+                observations[agent] = self._compute_obs(agent)
+            else:
+                # 如果飞机死了，按 PettingZoo 规矩传零向量
+                observations[agent] = np.zeros(19, dtype=np.float32)
 
         # 必须清理掉本回合死亡的智能体
         self.agents = [
