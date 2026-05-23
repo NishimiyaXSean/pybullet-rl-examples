@@ -62,13 +62,19 @@ class TacviewLogger:
         a_lon, a_lat, a_z = self._convert_coords(*a_pos)
         # PyBullet 的 rpy 是 (Roll, Pitch, Yaw) 弧度制，Tacview 需要角度制
         a_roll, a_pitch, a_yaw = [math.degrees(angle) for angle in a_rpy]
-        self.file.write(f"101,T={a_lon:.7f}|{a_lat:.7f}|{a_z:.1f}|{a_roll:.1f}|{a_pitch:.1f}|{a_yaw:.1f}\n")
+
+        # === 核心修复：坐标系对齐 ===
+        # PyBullet (0=东, 逆时针) 转换为 Tacview (0=北, 顺时针)
+        a_tacview_yaw = (90.0 - a_yaw) % 360.0
+
+        self.file.write(f"101,T={a_lon:.7f}|{a_lat:.7f}|{a_z:.1f}|{a_roll:.1f}|{a_pitch:.1f}|{a_tacview_yaw:.1f}\n")
 
         # 解析并写入目标机 (102) 状态
         e_pos, e_rpy = evader_state['pos'], evader_state['rpy']
         e_lon, e_lat, e_z = self._convert_coords(*e_pos)
         e_roll, e_pitch, e_yaw = [math.degrees(angle) for angle in e_rpy]
-        self.file.write(f"102,T={e_lon:.7f}|{e_lat:.7f}|{e_z:.1f}|{e_roll:.1f}|{e_pitch:.1f}|{e_yaw:.1f}\n")
+        e_tacview_yaw = (90.0 - e_yaw) % 360.0
+        self.file.write(f"102,T={e_lon:.7f}|{e_lat:.7f}|{e_z:.1f}|{e_roll:.1f}|{e_pitch:.1f}|{e_tacview_yaw:.1f}\n")
 
     def close(self):
         """结束记录并关闭文件"""

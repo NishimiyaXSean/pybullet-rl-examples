@@ -13,6 +13,8 @@ experiments/learning/results/save-*
 *.pkl
 *.zip
 *.json
+*.txt
+*.acmi
 
 # Betaflight
 betaflight_sitl/
