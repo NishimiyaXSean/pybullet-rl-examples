@@ -2,7 +2,7 @@ import os
 import shutil  # 用于删除旧的最优模型文件夹
 import datetime
 current_time = datetime.datetime.now().strftime("%m%d_%H%M")
-PROJECT_ROOT = os.path.abspath(f"./marl_runs/run_{current_time}")
+PROJECT_ROOT = os.path.abspath(f"./marl_runs/mappo_run_{current_time}")
 os.environ['TUNE_RESULT_DIR'] = PROJECT_ROOT
 os.environ['RAY_RESULTS'] = PROJECT_ROOT
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'  # 解决 Windows 下 NumPy 和 PyTorch 的 OpenMP 冲突
@@ -16,6 +16,11 @@ import ray
 from ray.rllib.algorithms.ppo import PPOConfig
 from ray.tune.registry import register_env
 from ray.rllib.algorithms.callbacks import DefaultCallbacks
+
+# ================= 新增：引入自定义 MAPPO 网络和模型注册器 =================
+from ray.rllib.models import ModelCatalog
+from mappo_model import MAPPOModel
+# ====================================================================
 
 # 环境代码保存在 marl_env.py 中，类名叫 Drone1v1MARLEnv
 from marl_env import Drone1v1MARLEnv
@@ -68,14 +73,18 @@ if __name__ == "__main__":
     ray.init()
 
     # 2. 注册环境名称
-    env_name = "drone_1v1_env"
+    env_name = "drone_1v1_mappo_env"
     register_env(env_name, env_creator)
+
+    # ================= 新增：向 RLlib 注册自定义的 MAPPO 模型 =================
+    ModelCatalog.register_custom_model("mappo_centralized_critic", MAPPOModel)
+    # =======================================================================
 
     # 动态获取空间维度
     temp_env = env_creator({})
     obs_space = temp_env.observation_spaces["attacker_0"]
     act_space = temp_env.action_spaces["attacker_0"]
-    print(f"检测到环境观测空间维度: {obs_space.shape}, 动作空间: {act_space.n}")
+    print(f"检测到环境观测空间: {obs_space}, 动作空间维度: {act_space.shape}")
 
     # 3. 核心算法配置 (PPOConfig)
     config = (
@@ -85,7 +94,7 @@ if __name__ == "__main__":
         .resources(num_gpus=1 if torch.cuda.is_available() else 0)
         .env_runners(
             num_env_runners=4,
-            sample_timeout_s=300,      # 将超时容忍度从默认的 60 秒延长到 5 分钟
+            sample_timeout_s=300,       # 将超时容忍度从默认的 60 秒延长到 5 分钟
             rollout_fragment_length=256 # 细化数据包，避免单次收集太久
             ) 
         .callbacks(DroneMetricsCallback)
@@ -115,22 +124,21 @@ if __name__ == "__main__":
         
         # 5. 神经网络结构 (Net Arch)
         .training(
-            model={"fcnet_hiddens": [256, 256, 128], "fcnet_activation": "relu"},
+            model={"custom_model": "mappo_centralized_critic"},
             train_batch_size=16384,
             minibatch_size=2048,
             lr=3e-4,
-            entropy_coeff=0.1,
+            entropy_coeff=0.01,
             clip_param=0.2, # 限制价值函数的截断
             vf_clip_param=10.0,
-            gamma=0.995,          # 折扣因子 (默认 0.99，越大越看重长期收益)
+            gamma=0.995,         # 折扣因子 (默认 0.99，越大越看重长期收益)
             lambda_=0.95,        # GAE 参数 (默认 0.95)
             kl_coeff=0.2,        # KL 散度惩罚系数 (默认 0.2)
         )
     )
 
     # 6. 构建算法对象
-    print("正在构建 RLlib 算法对象，请稍候...")
-
+    print("正在构建 RLlib MAPPO 算法对象，请稍候...")
     algo = config.build()
 
     # 创建独立的权重存放子文件夹
@@ -143,6 +151,7 @@ if __name__ == "__main__":
     print(f"tensorboard --logdir=\"{PROJECT_ROOT}\"")
     print("="*45 + "\n")
 
+    '''
     # 加载旧模型以继续训练
     OLD_CHECKPOINT = os.path.abspath("./marl_runs/run_0522_1018/checkpoints/checkpoint_best_iter_085" )
 
@@ -152,22 +161,23 @@ if __name__ == "__main__":
     else:
         print("未发现旧模型，将从随机初始化开始全新训练。")
     
+    '''
 
     tb_writer = SummaryWriter(log_dir=PROJECT_ROOT)
 
     # 7. 开始训练循环
     TRAIN_ITERATIONS = 500
-    best_success_rate = -0.01   # 初始化成功率为 -0.01，这样可以确保第一轮训练（即使成功率是 0%）也能作为保底模型保存下来
+    best_success_rate = -0.01
     best_checkpoint_path = None    
-    global_episodes = 0  # 新增：全局回合计数器 
+    global_episodes = 0  # 全局回合计数器 
 
     print("==================================")
-    print("开始多智能体 1v1 空战对抗训练！")
+    print("开始 MAPPO 多智能体 1v1 空战对抗训练！")
     print("提示：在终端按下 【Ctrl + C】 可随时安全终止训练并保存模型！")
     print("==================================")
 
     try: 
-        for i in range(TRAIN_ITERATIONS): # 每一次迭代为train_batch_size = 8192步
+        for i in range(TRAIN_ITERATIONS): # 每一次迭代为train_batch_size
             # step() 会让所有 worker 跑环境，收集数据，更新神经网络，然后返回统计信息
             result = algo.train()
 
@@ -182,10 +192,10 @@ if __name__ == "__main__":
             # 提取总训练步数和本轮完成的回合数
             total_steps = result.get("num_env_steps_trained", 0)
 
-            # 【修复点1】获取本轮准确的回合数 (RLlib 的标准键名是 episodes_this_iter)
+            # 获取本轮准确的回合数
             episodes_this_iter = stats.get("episodes_this_iter", 0)
 
-            # ================= 核心修复：精准提取本轮迭代的真实统计 =================
+            # 精准提取本轮迭代的真实统计
             hist_stats = stats.get("hist_stats", {})
 
             # 提取历史记录列表 (RLlib 默认保留最近的 100 局)
@@ -194,7 +204,7 @@ if __name__ == "__main__":
             oob_list     = hist_stats.get("rate_oob", [])
             timeout_list = hist_stats.get("rate_timeout", [])
 
-            # 【修复点2】辅助函数：利用切片 (Slicing) 强制只取最后 N 局的数据
+            # 利用切片 (Slicing) 强制只取最后 N 局的数据
             def calc_iter_mean(lst, num_recent):
                 if num_recent <= 0 or not lst:
                     return 0.0
@@ -202,12 +212,10 @@ if __name__ == "__main__":
                 recent_lst = lst[-num_recent:]
                 return sum(recent_lst) / len(recent_lst)
 
-            # 现在的率值，严格等于本轮这二十多局的真实表现！
             success_rate = calc_iter_mean(success_list, episodes_this_iter)
             crash_rate   = calc_iter_mean(crash_list, episodes_this_iter)
             oob_rate     = calc_iter_mean(oob_list, episodes_this_iter)
             timeout_rate = calc_iter_mean(timeout_list, episodes_this_iter)
-            # =====================================================================
 
             # 提取策略熵 (Entropy) 
             learner_info = result.get("info", {}).get("learner", {})
@@ -257,7 +265,6 @@ if __name__ == "__main__":
                 # 这在图表上会形成 0 和 1 的散点图，非常直观！
                 if idx < len(success_hist):
                     tb_writer.add_scalar("4_Micro_Events/Is_Success", success_hist[idx], global_episodes)
-            # ==============================================================
             
             tb_writer.flush() # 强制立刻写盘，绝不缓存延迟！
             
