@@ -72,8 +72,8 @@ class Drone1v1MARLEnv(MultiAgentEnv):
         
         self.observation_spaces = {
             agent: gym.spaces.Dict({
-                "obs": gym.spaces.Box(low=-1.0, high=1.0, shape=(19,), dtype=np.float32),
-                "global_state": gym.spaces.Box(low=-1.0, high=1.0, shape=(self.GLOBAL_STATE_DIM,), dtype=np.float32)
+                "obs": gym.spaces.Box(low=-np.inf, high=np.inf, shape=(19,), dtype=np.float32),
+                "global_state": gym.spaces.Box(low=-np.inf, high=np.inf, shape=(self.GLOBAL_STATE_DIM,), dtype=np.float32)
             })
             for agent in self.possible_agents
         }
@@ -102,9 +102,9 @@ class Drone1v1MARLEnv(MultiAgentEnv):
         # 遍历所有可能存在的飞机 (注意使用 self.possible_agents 保证顺序和维度固定)
         for i, agent in enumerate(self.possible_agents):
             if agent in self.agents:
-                # 如果飞机存活，提取其绝对物理状态
-                pyb_id = self.pyb_env.DRONE_IDS[i] if hasattr(self.pyb_env, 'DRONE_IDS') else self.pyb_env.drone_ids[i]
-                state_vec = self.pyb_env._getDroneStateVector(pyb_id)
+                # 【核心修复点】
+                # _getDroneStateVector 必须传入内部索引 (0 或是 1)，不能传 PyBullet 实体 ID
+                state_vec = self.pyb_env._getDroneStateVector(i)
                 
                 # 提取: 绝对位置(3), 四元数姿态(4), 绝对速度(3), 绝对角速度(3)
                 pos = state_vec[0:3] / 5000.0          # 归一化位置
@@ -121,7 +121,8 @@ class Drone1v1MARLEnv(MultiAgentEnv):
             global_state.append(agent_state)
             
         # 拼接成一个展平的一维大向量
-        return np.concatenate(global_state).astype(np.float32)
+        global_array = np.concatenate(global_state).astype(np.float32)
+        return np.clip(global_array, -1.0, 1.0)
 
     def reset(self, seed=None, options=None):
         """
@@ -200,7 +201,8 @@ class Drone1v1MARLEnv(MultiAgentEnv):
         # 初始化时间步与两架飞机的局部追踪变量
         self.step_counter = 0  # 留着给底层备用
         self.macro_step = 0    # 真正的宏观决策步数
-        self.last_actions = {agent: 0 for agent in self.agents}
+        # 初始动作占位符必须是 3 维 NumPy 零向量
+        self.last_actions = {agent: np.zeros(3, dtype=np.float32) for agent in self.agents}
     
         # 计算开局时的初始距离 (用于第一帧的奖励计算基准)
         attacker_pos = self.pyb_env._getDroneStateVector(0)[0:3]
@@ -428,12 +430,19 @@ class Drone1v1MARLEnv(MultiAgentEnv):
         attacker_id = 0
         evader_id = 1
 
-        # 动作连续性惩罚
+        # --- [修改后] ---
+        # 动作平滑度惩罚 (连续动作空间专属)
         for agent, act in actions.items():
-            if act != self.last_actions.get(agent, 0):
-                # 每次切换动作，扣除一点体力分，逼迫其保持动作连贯
-                total_rewards[agent] -= 0.5 
-            self.last_actions[agent] = act
+            last_act = self.last_actions.get(agent, np.zeros(3, dtype=np.float32))
+            
+            # 计算这一帧和上一帧推杆动作的差异大小 (欧氏距离 L2 Norm)
+            action_delta = np.linalg.norm(act - last_act)
+            
+            # 根据猛推摇杆的剧烈程度给予惩罚 (系数 0.1 比较温和，鼓励丝滑微调)
+            total_rewards[agent] -= 0.1 * action_delta 
+            
+            # 存入本帧动作，必须使用 .copy() 防止内存地址的引用污染
+            self.last_actions[agent] = np.array(act).copy()
 
         attacker_state_init = self.pyb_env._getDroneStateVector(attacker_id)
         evader_state_init = self.pyb_env._getDroneStateVector(evader_id)
@@ -485,8 +494,10 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                         n_x_cmd = 0.0
                         n_n_cmd = 2.0
                         mu_cmd = -np.pi / 3.0  # 向右 60度滚转
-                    else:
-                        n_x_cmd, n_n_cmd, mu_cmd = self.bfm_action_mapping[0] # 直飞
+                    else: # 直飞
+                        n_x_cmd = 0.0
+                        n_n_cmd = 1.0
+                        mu_cmd = 0.0
                 # ====================================================================
                 
                 current_max_speed = self.MAX_SPEED
