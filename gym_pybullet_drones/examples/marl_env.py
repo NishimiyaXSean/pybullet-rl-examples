@@ -41,8 +41,8 @@ class Drone1v1MARLEnv(MultiAgentEnv):
 
         self.CTRL_FREQ = 60
         self.is_manual_mode = False
-        self.EPISODE_LEN_SEC = 45 # 回合最大时长
-        self.cpa_radius = 150.0     # 近炸引信触发半径
+        self.EPISODE_LEN_SEC = 60 # 回合最大时长
+        self.cpa_radius = 400.0     # 近炸引信触发半径
 
         # --- 战斗机飞行包线参数 (F-16/歼-10 级别模拟) ---
         self.MAX_G = 9.0          # 最大结构过载 (正G)
@@ -173,6 +173,15 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 yaw = np.arctan2(dy, dx)
                 self.attacker_init_yaw = yaw # 记录一下攻击机的朝向
             else:
+                # ================= 课程学习 Stage 1.0：婴儿级纯尾追 =================
+                # 【降维】强制战术夹角为 0 (纯尾追)
+                tactical_offset = 0.0 
+                # 【降维】将初始偏角扰动缩小到 ±10度 (np.pi/18)
+                noise = np.random.uniform(-np.pi/18, np.pi/18)
+                
+                yaw = self.attacker_init_yaw + tactical_offset + noise
+                
+                '''
                 # ================= 课程学习 Stage 1.5：全向直线拦截 =================
                 # 引入四种经典的战术初始态势，并加入 ±15度 的随机扰动防止过拟合
                 
@@ -187,6 +196,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 
                 yaw = self.attacker_init_yaw + tactical_offset + noise
                 # ====================================================================
+                '''
 
             # 根据真实偏航角分解 X 和 Y 方向的初始速度
             init_vel = [initial_speed * np.cos(yaw), initial_speed * np.sin(yaw), 0.0]
@@ -212,6 +222,11 @@ class Drone1v1MARLEnv(MultiAgentEnv):
         # 记录上一帧的 ATA 余弦值，用于计算趋势
         self.last_cos_ata_A = 1.0
 
+        # ================= 课程学习 Stage 1.0：移动打靶 =================
+        # 【降维】强制目标机只能直飞
+        self.evader_maneuver = "straight"
+        
+        '''
         # ================= 课程学习 Stage 2：随机化目标机盘旋 =================
         # 随机决定本回合目标机的机动策略。
         # 概率分布：40% 直飞，30% 左转，30% 右转
@@ -221,6 +236,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
         )
         # ====================================================================
     
+        '''
         global_state_array = self._compute_global_state()
         obs_dict = {
             agent: {
@@ -1023,12 +1039,12 @@ class Drone1v1MARLEnv(MultiAgentEnv):
             for agent, state in zip(["attacker_0", "evader_0"], [new_attacker_state, new_evader_state]):
                 if agent in actions and not terminations[agent]: # 只有这个 agent 还在计分板上，才对它进行边界惩罚！
                     if state[2] < 10:
-                        total_rewards[agent] -= 1000.0
+                        total_rewards[agent] -= 5000.0
                         terminations[agent] = True
                         infos[agent]["reason"] = "ground_crash"
                         crash_occurred = True 
                     elif state[2] > 5000.0:
-                        total_rewards[agent] -= 1000.0
+                        total_rewards[agent] -= 5000.0
                         terminations[agent] = True
                         infos[agent]["reason"] = "out_of_bounds" 
                         crash_occurred = True
@@ -1046,7 +1062,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
 
             # 如果演习结束，且攻击机既没有坠毁也没有击杀（即苟活到了最后），给予巨额惩罚
             if not terminations.get("attacker_0", True) and "attacker_0" in total_rewards:
-                total_rewards["attacker_0"] -= 3000.0
+                total_rewards["attacker_0"] -= 500.0  # 减轻超时惩罚，鼓励先生存再输出
                 
             # 对应的，目标机成功拖延时间活到了最后，任务圆满完成，给予巨额奖励
             if not terminations.get("evader_0", True) and "evader_0" in total_rewards:
