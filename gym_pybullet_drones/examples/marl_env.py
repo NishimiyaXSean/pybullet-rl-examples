@@ -166,7 +166,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
         # 3. 目标机强制取相反符号，确保永远出生在对角象限！
         evader_x = -sign_x * np.random.uniform(self.d_min, self.d_max)
         evader_y = -sign_y * np.random.uniform(self.d_min, self.d_max)
-        evader_z = np.random.uniform(2000.0, 2500.0)
+        evader_z = np.random.uniform(self.z_min - 500.0, self.z_min)
         self.evader_initial_z = evader_z
 
         # 组合成新的初始坐标数组
@@ -719,9 +719,9 @@ class Drone1v1MARLEnv(MultiAgentEnv):
 
                 # 攻击机软地板警告 
                 reward_A_ground_warning = 0.0
-                if new_attacker_pos[2] < 1500.0:  
+                if new_attacker_pos[2] < 1000.0:  
                     # 高度越低，惩罚呈指数级上升
-                    depth_ratio = (1500.0 - new_attacker_pos[2]) / 1500.0
+                    depth_ratio = (1000.0 - new_attacker_pos[2]) / 1000.0
                     reward_A_ground_warning = -(depth_ratio ** 2) * 5.0 * dt
 
                     # 提取当前 Z 轴速度 (垂直速度)
