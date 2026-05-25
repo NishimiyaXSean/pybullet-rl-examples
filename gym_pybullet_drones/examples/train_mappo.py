@@ -38,35 +38,44 @@ def env_creator(config):
     return env
 
 class DroneMetricsCallback(DefaultCallbacks):
+    def __init__(self):
+        super().__init__()
+        self.current_stage = 1 # 初始化阶段
+
     def on_episode_end(self, *, worker, base_env, policies, episode, env_index, **kwargs):
-        # 尝试获取攻击机在最后一帧的 info 字典
         info = episode.last_info_for("attacker_0")
-
-        if info:
-            reason = info.get("reason", "timeout")
-        else:
-            reason = "timeout" # 如果没有 info，说明是时间耗尽平局
-        
-        '''
-        # 精细化拆解指标 (True -> 1.0, False -> 0.0)
-        # 1. 成功率: 真正进入有效射程
-        episode.custom_metrics["rate_success"] = 1.0 if reason == "success" else 0.0
-        
-        # 2. 坠地率
-        episode.custom_metrics["rate_crash"] = 1.0 if reason == "ground_crash" else 0.0
-        
-        # 3. 越界率
-        episode.custom_metrics["rate_oob"] = 1.0 if reason == "out_of_bounds" else 0.0
-        
-        # 4. 超时率: 目标机成功存活到了回合结束
-        episode.custom_metrics["rate_timeout"] = 1.0 if reason == "timeout" else 0.0
-
-        '''
+        reason = info.get("reason", "timeout") if info else "timeout"
 
         episode.hist_data["rate_success"] = [1.0 if reason == "success" else 0.0]
         episode.hist_data["rate_crash"] = [1.0 if reason == "ground_crash" else 0.0]
         episode.hist_data["rate_oob"] = [1.0 if reason == "out_of_bounds" else 0.0]
         episode.hist_data["rate_timeout"] = [1.0 if reason == "timeout" else 0.0]
+
+    def on_train_result(self, *, algorithm, result, **kwargs):
+        """每次 train() 执行完后调用，用于评估是否需要升级课程"""
+        hist_stats = result.get("hist_stats", {})
+        success_list = hist_stats.get("rate_success", [])
+        
+        # 至少积累了 100 局数据，才开始评估胜率 (防止初期因为样本少而导致的胜率虚高)
+        if len(success_list) >= 100:
+            # 计算最近 100 局的平均胜率
+            recent_success = sum(success_list[-100:]) / len(success_list[-100:])
+            
+            # 【升级条件】：胜率超过 60%，并且还没有达到满级 (Stage 3)
+            if recent_success >= 0.60 and self.current_stage < 3:
+                self.current_stage += 1
+                print(f"\n{'='*40}")
+                print(f"[课程学习触发] 胜率已达 {recent_success*100:.1f}%！")
+                print(f"战场扩容：全体环境升级至 Stage {self.current_stage}！")
+                print(f"{'='*40}\n")
+                
+                # 【核心操作】将新的难度阶段广播给后台所有的并行环境 Worker
+                algorithm.env_runner_group.foreach_env(
+                    lambda env: env.set_curriculum_stage(self.current_stage)
+                )
+        
+        # 将当前阶段写入 result，方便后面传入 TensorBoard
+        result["curriculum_stage"] = self.current_stage
 
 if __name__ == "__main__":
     # 1. 初始化 Ray 引擎
@@ -127,9 +136,9 @@ if __name__ == "__main__":
             model={"custom_model": "mappo_centralized_critic"},
             train_batch_size=16384,
             minibatch_size=2048,
-            lr=1.5e-4,
-            entropy_coeff=0.01,
-            clip_param=0.2, # 限制价值函数的截断
+            lr=5e-5,
+            entropy_coeff=0.005,
+            clip_param=0.1, # 限制价值函数的截断
             vf_clip_param=10.0,
             gamma=0.995,         # 折扣因子 (默认 0.99，越大越看重长期收益)
             lambda_=0.95,        # GAE 参数 (默认 0.95)
@@ -248,6 +257,10 @@ if __name__ == "__main__":
             
             # 你在 callback 里记录的 custom_metrics 也会原封不动保存在这里
             success_hist = hist_stats.get("rate_success", [])
+            
+            # 【新增】将当前难度阶段画到图表里
+            current_stage = result.get("curriculum_stage", 1)
+            tb_writer.add_scalar("5_Network_Stats/Curriculum_Stage", current_stage, i+1)
 
             # 遍历这一轮收集到的所有完整回合
             for idx in range(len(a_rewards_hist)):

@@ -93,6 +93,28 @@ class Drone1v1MARLEnv(MultiAgentEnv):
             log_filename = f"drone_eval_{timestamp}.txt.acmi"
             self.tacview_logger = TacviewLogger(filename=log_filename)
 
+        self.curriculum_stage = 1
+        self._update_curriculum_bounds()
+
+    def set_curriculum_stage(self, stage):
+        """供外部 RLlib 算法调用的难度调节接口"""
+        self.curriculum_stage = stage
+        self._update_curriculum_bounds()
+
+    def _update_curriculum_bounds(self):
+        """定义每个难度阶段的具体出生范围"""
+        if self.curriculum_stage == 1:
+            # Stage 1: 近距超视距 (新手村)
+            self.d_min, self.d_max = 200.0, 600.0
+            self.z_min, self.z_max = 1500.0, 2000.0
+        elif self.curriculum_stage == 2:
+            # Stage 2: 中距拉锯
+            self.d_min, self.d_max = 600.0, 1000.0
+            self.z_min, self.z_max = 2500.0, 3200.0
+        else:
+            # Stage 3: 长程高空对决 (毕业期)
+            self.d_min, self.d_max = 1000.0, 1500.0
+            self.z_min, self.z_max = 3500.0, 4500.0
     def _compute_global_state(self):
         """
         为 MAPPO 的 Critic 提取全知全能的全局状态 (Global State)
@@ -137,14 +159,14 @@ class Drone1v1MARLEnv(MultiAgentEnv):
         sign_y = np.random.choice([-1, 1])
 
         # 2. 在该象限内，生成初始距离
-        attacker_x = sign_x * np.random.uniform(200.0, 600.0)
-        attacker_y = sign_y * np.random.uniform(200.0, 600.0)
-        attacker_z = np.random.uniform(1500.0, 2000.0) 
+        attacker_x = sign_x * np.random.uniform(self.d_min, self.d_max)
+        attacker_y = sign_y * np.random.uniform(self.d_min, self.d_max)
+        attacker_z = np.random.uniform(self.z_min, self.z_max)
 
         # 3. 目标机强制取相反符号，确保永远出生在对角象限！
-        evader_x = -sign_x * np.random.uniform(200.0, 600.0)
-        evader_y = -sign_y * np.random.uniform(200.0, 600.0)
-        evader_z = np.random.uniform(1400.0, 1800.0)
+        evader_x = -sign_x * np.random.uniform(self.d_min, self.d_max)
+        evader_y = -sign_y * np.random.uniform(self.d_min, self.d_max)
+        evader_z = np.random.uniform(2000.0, 2500.0)
         self.evader_initial_z = evader_z
 
         # 组合成新的初始坐标数组
@@ -173,6 +195,13 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 yaw = np.arctan2(dy, dx)
                 self.attacker_init_yaw = yaw # 记录一下攻击机的朝向
             else:
+                # 强制战术夹角为 0 (纯尾追)
+                tactical_offset = 0.0 
+                # 保留 ±10度的微小扰动，防止过拟合
+                noise = np.random.uniform(-np.pi/18, np.pi/18)
+                yaw = self.attacker_init_yaw + tactical_offset + noise
+
+                '''
                 # ================= 课程学习 Stage 1.5：全向直线拦截 =================
                 # 引入四种经典的战术初始态势，并加入 ±15度 的随机扰动防止过拟合
                 
@@ -186,6 +215,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 noise = np.random.uniform(-np.pi/12, np.pi/12)
                 yaw = self.attacker_init_yaw + tactical_offset + noise
                 # ====================================================================
+                '''
 
             # 根据真实偏航角分解 X 和 Y 方向的初始速度
             init_vel = [initial_speed * np.cos(yaw), initial_speed * np.sin(yaw), 0.0]
@@ -519,9 +549,10 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 agent_current_z = pos[2]
 
                 # GPWS 近地警告覆盖
-                if agent_current_z < 500.0 and vel[2] < 0:  # 高度低于500米且具有向下的速度
-                    n_n_cmd = current_max_g  # 强制给足 9G 拉起
-                    mu_cmd = 0.0             # 强制改平滚转角，确保升力完全指向上方
+                # 如果低于 800 米，且具有超过 5m/s 的下坠速度，强制接管
+                if agent_current_z < 800.0 and vel[2] < -5.0:  
+                    n_n_cmd = current_max_g  # 强制给足最大过载拉起
+                    mu_cmd = 0.0             # 强制改平
 
                 V = np.linalg.norm(vel)
                 if V < 1e-3: V = 1e-3  # 防止除以 0
@@ -688,14 +719,19 @@ class Drone1v1MARLEnv(MultiAgentEnv):
 
                 # 攻击机软地板警告 
                 reward_A_ground_warning = 0.0
-                if new_attacker_pos[2] < 1000.0:  
+                if new_attacker_pos[2] < 1500.0:  
                     # 高度越低，惩罚呈指数级上升
-                    depth_ratio = (1000.0 - new_attacker_pos[2]) / 1000.0
-                    reward_A_ground_warning = -(depth_ratio ** 2) * 8.0 * dt
+                    depth_ratio = (1500.0 - new_attacker_pos[2]) / 1500.0
+                    reward_A_ground_warning = -(depth_ratio ** 2) * 5.0 * dt
+
+                    # 提取当前 Z 轴速度 (垂直速度)
+                    vz = trusted_states["attacker_0"]["vel"][2]
                     
-                    # 【重点】如果此时还在低头 (速度 Z 为负)，给予严重惩罚
-                    if trusted_states["attacker_0"]["vel"][2] <= 0:
-                        reward_A_ground_warning -= 5.0 * dt
+                    # 【核心保命机制】如果处于低空，且还在向下掉高度
+                    if vz < -1.0: 
+                        # 下坠越快，乘法叠加的惩罚越极端 (动态势能墙)
+                        # 例如 vz = -50m/s 时，每秒扣除巨大的分数，逼迫网络产生对“死亡俯冲”的恐惧
+                        reward_A_ground_warning -= abs(vz) * 0.2 * dt
                 
                 reward_A_tracking = 0.0
                 reward_A_ramming = 0.0
