@@ -685,8 +685,13 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 # 2. 时间惩罚 (全局生效：逼迫速战速决)
                 reward_A_time = -1.0 * dt
 
-                # 全向高度对齐惩罚
-                reward_A_z_penalty = -abs(dz) * 0.005 * dt 
+                reward_A_z_advantage = 0.0
+                if dz > 0:
+                    # 主机在上方：给予持续的正向能量奖励 (势能储备)
+                    reward_A_z_advantage = dz * 0.001 * dt  
+                else:
+                    # 主机在下方：给予较重的惩罚，逼迫它拉起机头爬升
+                    reward_A_z_advantage = dz * 0.005 * dt
                 
                 reward_A_energy_loss = 0.0 
 
@@ -696,12 +701,12 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 reward_A_ground_warning = 0.0
                 if new_attacker_pos[2] < 1000.0:  
                     # 高度越低，惩罚呈指数级上升
-                    depth = 1000.0 - new_attacker_pos[2]
-                    reward_A_ground_warning = -(depth ** 1.5) * 0.0005 * dt
+                    depth_ratio = (1000.0 - new_attacker_pos[2]) / 1000.0
+                    reward_A_ground_warning = -(depth_ratio ** 2) * 8.0 * dt
                     
                     # 【重点】如果此时还在低头 (速度 Z 为负)，给予严重惩罚
-                    if trusted_states["attacker_0"]["vel"][2] < 0:
-                        reward_A_ground_warning -= 1.0 * dt
+                    if trusted_states["attacker_0"]["vel"][2] <= 0:
+                        reward_A_ground_warning -= 5.0 * dt
                 
                 reward_A_tracking = 0.0
                 reward_A_ramming = 0.0
@@ -755,7 +760,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                     + reward_A_tracking 
                     + reward_A_time 
                     + reward_A_ramming 
-                    + reward_A_z_penalty       # 更新后的高度惩罚
+                    + reward_A_z_advantage     # 更新后的高度优势奖励
                     + reward_A_ground_warning 
                     + reward_A_energy_loss     # 新增的能量机动惩罚
                 )

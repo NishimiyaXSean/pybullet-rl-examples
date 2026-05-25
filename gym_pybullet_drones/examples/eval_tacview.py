@@ -3,6 +3,8 @@ import time
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 # 引入 RLlib 的策略加载基类
 from ray.rllib.policy.policy import Policy
+from ray.rllib.models import ModelCatalog
+from mappo_model import MAPPOModel
 from marl_env import Drone1v1MARLEnv
 
 def evaluate_and_record():
@@ -11,11 +13,13 @@ def evaluate_and_record():
     # 1. 实例化环境，强制开启 Tacview 记录
     # 评估时关闭 GUI (gui=False)，后台纯跑数据，生成极快
     env = Drone1v1MARLEnv(gui=False, record_tacview=True)
+
+    ModelCatalog.register_custom_model("mappo_centralized_critic", MAPPOModel)
     
     # 2. 尝试加载 RLlib 策略文件夹
     # 确保 policy_attacker 和 policy_evader 文件夹就在当前运行目录下
-    attacker_dir = os.path.abspath("./marl_runs/run_0522_1423/checkpoints/checkpoint_best_iter_469/policies/policy_attacker")
-    evader_dir = os.path.abspath("./marl_runs/run_0522_1423/checkpoints/checkpoint_best_iter_469/policies/policy_evader")
+    attacker_dir = os.path.abspath("./marl_runs/mappo_run_0525_1026/checkpoints/checkpoint_best_iter_336/policies/policy_attacker")
+    evader_dir = os.path.abspath("./marl_runs/mappo_run_0525_1026/checkpoints/checkpoint_best_iter_336/policies/policy_evader")
 
     policies = {}
     use_model = False

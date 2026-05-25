@@ -11,10 +11,12 @@ from mpl_toolkits.mplot3d import Axes3D
 import ray
 from ray.rllib.algorithms.algorithm import Algorithm
 from ray.tune.registry import register_env
+from ray.rllib.models import ModelCatalog
+from mappo_model import MAPPOModel
 
 from marl_env import Drone1v1MARLEnv
 
-RELATIVE_PATH = "./marl_runs/run_0522_1423/checkpoints/checkpoint_best_iter_469" 
+RELATIVE_PATH = "./marl_runs/mappo_run_0525_1026/checkpoints/checkpoint_best_iter_336" 
 CHECKPOINT_PATH = os.path.abspath(RELATIVE_PATH)
 
 def env_creator(config):
@@ -26,9 +28,10 @@ if __name__ == "__main__":
     ray.init()
     
     # 注册环境（必须与训练时一致）
-    env_name = "drone_1v1_env"
+    env_name = "drone_1v1_mappo_env"
     register_env(env_name, env_creator)
 
+    ModelCatalog.register_custom_model("mappo_centralized_critic", MAPPOModel)
     algo = Algorithm.from_checkpoint(CHECKPOINT_PATH)
     print("模型加载完成！")
 
@@ -37,7 +40,7 @@ if __name__ == "__main__":
     # "STRESS_TEST" -> 后台极速运行 100 局，统计真实胜率
     # "VISUAL_TEST" -> 带有 3D 界面和图表分析的单局观看模式
     # ==========================================
-    RUN_MODE = "VISUAL_TEST" 
+    RUN_MODE = "STRESS_TEST" 
 
     if RUN_MODE == "STRESS_TEST":
         print("==================================")
