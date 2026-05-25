@@ -127,7 +127,7 @@ if __name__ == "__main__":
             model={"custom_model": "mappo_centralized_critic"},
             train_batch_size=16384,
             minibatch_size=2048,
-            lr=3e-4,
+            lr=1.5e-4,
             entropy_coeff=0.01,
             clip_param=0.2, # 限制价值函数的截断
             vf_clip_param=10.0,
@@ -151,17 +151,15 @@ if __name__ == "__main__":
     print(f"tensorboard --logdir=\"{PROJECT_ROOT}\"")
     print("="*45 + "\n")
 
-    '''
+    
     # 加载旧模型以继续训练
-    OLD_CHECKPOINT = os.path.abspath("./marl_runs/run_0522_1018/checkpoints/checkpoint_best_iter_085" )
+    OLD_CHECKPOINT = os.path.abspath("./marl_runs/mappo_run_0525_1026/checkpoints/checkpoint_best_iter_336" )
 
     if os.path.exists(OLD_CHECKPOINT):
         print(f"正在恢复旧模型记忆: {OLD_CHECKPOINT}")
         algo.restore(OLD_CHECKPOINT)
     else:
         print("未发现旧模型，将从随机初始化开始全新训练。")
-    
-    '''
 
     tb_writer = SummaryWriter(log_dir=PROJECT_ROOT)
 

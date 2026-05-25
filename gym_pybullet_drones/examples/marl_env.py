@@ -173,15 +173,6 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 yaw = np.arctan2(dy, dx)
                 self.attacker_init_yaw = yaw # 记录一下攻击机的朝向
             else:
-                # ================= 课程学习 Stage 1.0：婴儿级纯尾追 =================
-                # 【降维】强制战术夹角为 0 (纯尾追)
-                tactical_offset = 0.0 
-                # 【降维】将初始偏角扰动缩小到 ±10度 (np.pi/18)
-                noise = np.random.uniform(-np.pi/18, np.pi/18)
-                
-                yaw = self.attacker_init_yaw + tactical_offset + noise
-                
-                '''
                 # ================= 课程学习 Stage 1.5：全向直线拦截 =================
                 # 引入四种经典的战术初始态势，并加入 ±15度 的随机扰动防止过拟合
                 
@@ -193,10 +184,8 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 
                 # 添加随机扰动 (约 ±15 度)
                 noise = np.random.uniform(-np.pi/12, np.pi/12)
-                
                 yaw = self.attacker_init_yaw + tactical_offset + noise
                 # ====================================================================
-                '''
 
             # 根据真实偏航角分解 X 和 Y 方向的初始速度
             init_vel = [initial_speed * np.cos(yaw), initial_speed * np.sin(yaw), 0.0]
