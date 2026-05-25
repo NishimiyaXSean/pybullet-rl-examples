@@ -125,10 +125,8 @@ if __name__ == "__main__":
             policy_mapping_fn=lambda agent_id, episode, worker, **kwargs: 
                 "policy_attacker" if agent_id == "attacker_0" else "policy_evader",
 
-            # =============== 新增优化 ===============
             # 在 Phase 1 阶段，只训练攻击机的大脑，目标机大脑完全冻结不参与计算
             policies_to_train=["policy_attacker"]
-            # ========================================
         )
         
         # 5. 神经网络结构 (Net Arch)
@@ -136,11 +134,11 @@ if __name__ == "__main__":
             model={"custom_model": "mappo_centralized_critic"},
             train_batch_size=16384,
             minibatch_size=2048,
-            lr=5e-5,
-            entropy_coeff=0.005,
-            clip_param=0.1, # 限制价值函数的截断
+            lr=3e-4,
+            entropy_coeff=0.01,
+            clip_param=0.2, # 限制价值函数的截断
             vf_clip_param=10.0,
-            gamma=0.995,         # 折扣因子 (默认 0.99，越大越看重长期收益)
+            gamma=0.99,         # 折扣因子 (默认 0.99，越大越看重长期收益)
             lambda_=0.95,        # GAE 参数 (默认 0.95)
             kl_coeff=0.2,        # KL 散度惩罚系数 (默认 0.2)
         )
@@ -160,7 +158,7 @@ if __name__ == "__main__":
     print(f"tensorboard --logdir=\"{PROJECT_ROOT}\"")
     print("="*45 + "\n")
 
-    
+    '''
     # 加载旧模型以继续训练
     OLD_CHECKPOINT = os.path.abspath("./marl_runs/mappo_run_0525_1026/checkpoints/checkpoint_best_iter_336" )
 
@@ -169,6 +167,7 @@ if __name__ == "__main__":
         algo.restore(OLD_CHECKPOINT)
     else:
         print("未发现旧模型，将从随机初始化开始全新训练。")
+    '''
 
     tb_writer = SummaryWriter(log_dir=PROJECT_ROOT)
 
@@ -257,7 +256,7 @@ if __name__ == "__main__":
             
             # 你在 callback 里记录的 custom_metrics 也会原封不动保存在这里
             success_hist = hist_stats.get("rate_success", [])
-            
+
             # 【新增】将当前难度阶段画到图表里
             current_stage = result.get("curriculum_stage", 1)
             tb_writer.add_scalar("5_Network_Stats/Curriculum_Stage", current_stage, i+1)
