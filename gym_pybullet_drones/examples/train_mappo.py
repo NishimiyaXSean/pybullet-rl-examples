@@ -53,7 +53,9 @@ class DroneMetricsCallback(DefaultCallbacks):
 
     def on_train_result(self, *, algorithm, result, **kwargs):
         """每次 train() 执行完后调用，用于评估是否需要升级课程"""
-        hist_stats = result.get("hist_stats", {})
+        # 【核心修复】：兼容新版 RLlib，进入 env_runners 提取真实数据
+        stats = result.get("env_runners", result)
+        hist_stats = stats.get("hist_stats", {})
         success_list = hist_stats.get("rate_success", [])
         
         # 至少积累了 100 局数据，才开始评估胜率 (防止初期因为样本少而导致的胜率虚高)
@@ -85,9 +87,8 @@ if __name__ == "__main__":
     env_name = "drone_1v1_mappo_env"
     register_env(env_name, env_creator)
 
-    # ================= 新增：向 RLlib 注册自定义的 MAPPO 模型 =================
+    # 向 RLlib 注册自定义的 MAPPO 模型
     ModelCatalog.register_custom_model("mappo_centralized_critic", MAPPOModel)
-    # =======================================================================
 
     # 动态获取空间维度
     temp_env = env_creator({})
@@ -158,16 +159,14 @@ if __name__ == "__main__":
     print(f"tensorboard --logdir=\"{PROJECT_ROOT}\"")
     print("="*45 + "\n")
 
-    '''
     # 加载旧模型以继续训练
-    OLD_CHECKPOINT = os.path.abspath("./marl_runs/mappo_run_0525_1026/checkpoints/checkpoint_best_iter_336" )
+    OLD_CHECKPOINT = os.path.abspath("./marl_runs/mappo_run_0525_2021/checkpoints/checkpoint_best_iter_121" )
 
     if os.path.exists(OLD_CHECKPOINT):
         print(f"正在恢复旧模型记忆: {OLD_CHECKPOINT}")
         algo.restore(OLD_CHECKPOINT)
     else:
         print("未发现旧模型，将从随机初始化开始全新训练。")
-    '''
 
     tb_writer = SummaryWriter(log_dir=PROJECT_ROOT)
 

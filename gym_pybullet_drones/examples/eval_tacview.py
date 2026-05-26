@@ -18,8 +18,8 @@ def evaluate_and_record():
     
     # 2. 尝试加载 RLlib 策略文件夹
     # 确保 policy_attacker 和 policy_evader 文件夹就在当前运行目录下
-    attacker_dir = os.path.abspath("./marl_runs/mappo_run_0525_1026/checkpoints/checkpoint_best_iter_336/policies/policy_attacker")
-    evader_dir = os.path.abspath("./marl_runs/mappo_run_0525_1026/checkpoints/checkpoint_best_iter_336/policies/policy_evader")
+    attacker_dir = os.path.abspath("./marl_runs/mappo_run_0525_2021/checkpoints/checkpoint_best_iter_121/policies/policy_attacker")
+    evader_dir = os.path.abspath("./marl_runs/mappo_run_0525_2021/checkpoints/checkpoint_best_iter_121/policies/policy_evader")
 
     policies = {}
     use_model = False
