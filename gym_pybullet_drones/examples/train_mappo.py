@@ -135,7 +135,7 @@ if __name__ == "__main__":
             model={"custom_model": "mappo_centralized_critic"},
             train_batch_size=16384,
             minibatch_size=2048,
-            lr=3e-4,
+            lr=1e-4,
             entropy_coeff=0.01,
             clip_param=0.2, # 限制价值函数的截断
             vf_clip_param=10.0,

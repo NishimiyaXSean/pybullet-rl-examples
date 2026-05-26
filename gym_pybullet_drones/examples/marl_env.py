@@ -109,12 +109,12 @@ class Drone1v1MARLEnv(MultiAgentEnv):
             self.z_min, self.z_max = 1500.0, 2000.0
         elif self.curriculum_stage == 2:
             # Stage 2: 中距拉锯
-            self.d_min, self.d_max = 600.0, 1000.0
-            self.z_min, self.z_max = 2500.0, 3200.0
+            self.d_min, self.d_max = 400.0, 900.0
+            self.z_min, self.z_max = 1800.0, 2500.0
         else:
             # Stage 3: 长程高空对决 (毕业期)
-            self.d_min, self.d_max = 1000.0, 1500.0
-            self.z_min, self.z_max = 3500.0, 4500.0
+            self.d_min, self.d_max = 700.0, 1500.0
+            self.z_min, self.z_max = 2200.0, 3200.0
     def _compute_global_state(self):
         """
         为 MAPPO 的 Critic 提取全知全能的全局状态 (Global State)
@@ -708,7 +708,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 reward_A_z_advantage = 0.0
                 if dz > 0:
                     # 主机在上方：给予持续的正向能量奖励 (势能储备)
-                    reward_A_z_advantage = dz * 0.001 * dt  
+                    reward_A_z_advantage = 0
                 else:
                     # 主机在下方：给予较重的惩罚，逼迫它拉起机头爬升
                     reward_A_z_advantage = dz * 0.005 * dt
@@ -769,15 +769,30 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                     # cos_collision 衡量的是“相对速度”是否指向目标，这是直线拦截的核心！
                     cos_collision = np.clip(np.dot(rel_vel_dir, los_dir), -1.0, 1.0)
 
-                    if cos_ata_attacker > 0.866: # 大约 30 度圆锥角内
-                        # 咬尾奖励：在前半球且对得很准
-                        reward_A_tracking = 2.0 * dt
-                    elif cos_ata_attacker > 0:
-                        # 逐渐对齐的过程中给予正向鼓励
-                        reward_A_tracking = cos_ata_attacker * 0.5 * dt
+                    reward_A_tracking = 0.0
+
+                    # ==========================================================
+                    # 升级版：双重追踪奖励 (机头姿态 ATA + 物理航迹 Collision)
+                    # ==========================================================
+                    reward_A_tracking = 0.0
+                    
+                    # 1. 姿态对准奖励 (ATA) - 引导机头转向猎物
+                    if cos_ata_attacker > 0.985:  # 极严苛：约 10度 内 (完美锁定)
+                        reward_A_tracking += 10.0 * dt
+                    elif cos_ata_attacker > 0.866: # 30度 圆锥角内
+                        reward_A_tracking += 5.0 * dt
+                    elif cos_ata_attacker > 0.0:   # 敌机在视野前方 (90度内)
+                        reward_A_tracking += cos_ata_attacker * 2.0 * dt
                     else:
-                        # 敌机在背后：只给极小的惩罚，或者不给惩罚，完全依赖距离和时间惩罚来逼迫它转向
-                        reward_A_tracking = -0.1 * dt 
+                        # 【剧痛惩罚】：如果把背部或侧面留给敌机，施加严厉扣分，逼迫其立刻掉头！
+                        reward_A_tracking -= 5.0 * dt 
+                        
+                    # 2. 航迹碰撞奖励 (Collision Course) - 引导建立真正的截击航线
+                    # 哪怕机头没有完全指着目标 (存在侧滑角)，只要速度矢量对准了，未来必将相撞！
+                    if cos_collision > 0.95: # 航向高度吻合，处于完美前置拦截航线上
+                        reward_A_tracking += 15.0 * dt  # 给予极高的绩效奖金
+                    elif cos_collision > 0.0:
+                        reward_A_tracking += cos_collision * 5.0 * dt
                
                 # 单帧结算
                 total_rewards["attacker_0"] += (
