@@ -769,30 +769,39 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                     # cos_collision 衡量的是“相对速度”是否指向目标，这是直线拦截的核心！
                     cos_collision = np.clip(np.dot(rel_vel_dir, los_dir), -1.0, 1.0)
 
-                    reward_A_tracking = 0.0
-
                     # ==========================================================
-                    # 升级版：双重追踪奖励 (机头姿态 ATA + 物理航迹 Collision)
+                    # BFM 综合战术几何奖励 (ATA + AA + HCA + Collision)
                     # ==========================================================
                     reward_A_tracking = 0.0
                     
-                    # 1. 姿态对准奖励 (ATA) - 引导机头转向猎物
-                    if cos_ata_attacker > 0.985:  # 极严苛：约 10度 内 (完美锁定)
-                        reward_A_tracking += 10.0 * dt
-                    elif cos_ata_attacker > 0.866: # 30度 圆锥角内
-                        reward_A_tracking += 5.0 * dt
-                    elif cos_ata_attacker > 0.0:   # 敌机在视野前方 (90度内)
-                        reward_A_tracking += cos_ata_attacker * 2.0 * dt
+                    # 1. 基础瞄准：机头必须试图看向敌机 (ATA)
+                    if cos_ata_attacker > 0.866:   # 30度内
+                        reward_A_tracking += 3.0 * dt
+                    elif cos_ata_attacker > 0.0:   # 前半球
+                        reward_A_tracking += cos_ata_attacker * 1.5 * dt
                     else:
-                        # 【剧痛惩罚】：如果把背部或侧面留给敌机，施加严厉扣分，逼迫其立刻掉头！
-                        reward_A_tracking -= 5.0 * dt 
+                        reward_A_tracking -= 3.0 * dt # 严厉惩罚背对目标
                         
-                    # 2. 航迹碰撞奖励 (Collision Course) - 引导建立真正的截击航线
-                    # 哪怕机头没有完全指着目标 (存在侧滑角)，只要速度矢量对准了，未来必将相撞！
-                    if cos_collision > 0.95: # 航向高度吻合，处于完美前置拦截航线上
-                        reward_A_tracking += 15.0 * dt  # 给予极高的绩效奖金
-                    elif cos_collision > 0.0:
-                        reward_A_tracking += cos_collision * 5.0 * dt
+                    # 2. 阵位优势：必须试图进入敌机后半球 (AA)
+                    # cos_aa_attacker 越大，说明越靠近敌机正后方的 6 点钟盲区
+                    if cos_aa_attacker > 0.5: # 处于敌机后半球 60 度扇区
+                        reward_A_tracking += cos_aa_attacker * 2.0 * dt
+                    elif cos_aa_attacker < -0.5: # 处于敌机正前方危险区
+                        reward_A_tracking -= 1.0 * dt
+
+                    # 3. 速度矢量对齐：防止交臂过冲 (HCA)
+                    # 同向飞行能极大降低相对闭合率，提供更充裕的击杀窗口
+                    if cos_hca > 0.866: # 航向差异小于 30 度
+                        reward_A_tracking += 2.0 * dt
+
+                    # 4. 碰撞截击：引导直线提前量 (Collision)
+                    if cos_collision > 0.95: 
+                        reward_A_tracking += 5.0 * dt
+                        
+                    # 5. 终极协同分：进入“黄金控制区” (Control Zone)
+                    # 必须同时满足：机头对准 (ATA)、在敌机屁股后面 (AA)、且同向飞行 (HCA)
+                    if cos_ata_attacker > 0.866 and cos_aa_attacker > 0.866 and cos_hca > 0.866:
+                        reward_A_tracking += 15.0 * dt # 给予极高的reward
                
                 # 单帧结算
                 total_rewards["attacker_0"] += (
