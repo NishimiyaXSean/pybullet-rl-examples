@@ -107,17 +107,18 @@ if __name__ == "__main__":
             model={"custom_model": "mappo_centralized_critic"},
             train_batch_size=16384,
             minibatch_size=2048,
-            lr=1e-4,
+            lr=3e-4,
             # 【修改】：将固定的 0.01 替换为线性衰减策略
             # 格式: [初始总步数, 初始熵系数, 结束总步数, 结束熵系数]
-            # 假设环境经过 180 万步时进入 Stage 2, 熵系数从 0.01 逐渐强制降到 0.0001，逼迫它收敛。
+            # 假设环境经过 200 万步时进入 Stage 2, 熵系数从 0.01 逐渐强制降到 0.0001，逼迫它收敛。
             entropy_coeff_schedule=[
-                [1800000, 0.01], 
-                [10000000, 0.0001]
+                [0, 0.01],         # 第 0 步开始，设定初始熵系数
+                [1000000, 0.01],   # 前 100 万步保持 0.01，给模型充足的时间去探索“全向近距格斗”的物理边界
+                [8000000, 0.0001]  # 随后平滑衰减，在 800 万步（即训练尾声）时降至 0.0001，强制逼迫动作收敛
             ],
             clip_param=0.2, # 限制价值函数的截断
-            vf_clip_param=10.0,
-            gamma=0.99,         # 折扣因子 (默认 0.99，越大越看重长期收益)
+            vf_clip_param=50.0,
+            gamma=0.999,         # 折扣因子 (越大越看重长期收益)
             lambda_=0.95,        # GAE 参数 (默认 0.95)
             kl_coeff=0.2,        # KL 散度惩罚系数 (默认 0.2)
         )
@@ -137,6 +138,7 @@ if __name__ == "__main__":
     print(f"tensorboard --logdir=\"{PROJECT_ROOT}\"")
     print("="*45 + "\n")
 
+    '''
     # 加载旧模型以继续训练
     OLD_CHECKPOINT = os.path.abspath("./marl_runs/mappo_run_0527_1047/checkpoints/checkpoint_best_iter_010" )
 
@@ -145,6 +147,8 @@ if __name__ == "__main__":
         algo.restore(OLD_CHECKPOINT)
     else:
         print("未发现旧模型，将从随机初始化开始全新训练。")
+
+    '''
 
     tb_writer = SummaryWriter(log_dir=PROJECT_ROOT)
 

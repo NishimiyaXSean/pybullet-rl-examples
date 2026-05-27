@@ -21,8 +21,8 @@ class Drone1v1MARLEnv(MultiAgentEnv):
         # 2. 实例化底层物理引擎 (CtrlAviary)
         # 将两架飞机分别放置在场地的对角线位置，拉开初始距离
         init_xyzs = np.array([
-            [-2000.0, -2000.0, 3000.0],  # attacker_0 的初始位置 (ID: 0)
-            [ 2000.0,  2000.0, 3000.0]   # evader_0   的初始位置 (ID: 1)
+            [-500.0, 0.0, 3000.0],  # attacker_0 的初始位置 (ID: 0)
+            [ 500.0, 0.0, 3000.0]   # evader_0   的初始位置 (ID: 1)
         ])
         
         self.pyb_env = CtrlAviary(
@@ -42,7 +42,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
         self.CTRL_FREQ = 60
         self.is_manual_mode = False
         self.EPISODE_LEN_SEC = 60 # 回合最大时长
-        self.cpa_radius = 400.0     # 近炸引信触发半径
+        self.cpa_radius = 300.0   # 近炸引信触发半径
 
         # --- 战斗机飞行包线参数 (F-16/歼-10 级别模拟) ---
         self.MAX_G = 9.0          # 最大结构过载 (正G)
@@ -166,7 +166,10 @@ class Drone1v1MARLEnv(MultiAgentEnv):
         # 3. 目标机强制取相反符号，确保永远出生在对角象限！
         evader_x = -sign_x * np.random.uniform(self.d_min, self.d_max)
         evader_y = -sign_y * np.random.uniform(self.d_min, self.d_max)
-        evader_z = np.random.uniform(self.z_min - 500.0, self.z_min)
+        
+        # 让目标机的高度以攻击机为基准，上下随机浮动 500 米
+        # 这样攻击机有 50% 概率处于高位，50% 概率处于低位，必须学会全向俯仰机动！
+        evader_z = attacker_z + np.random.uniform(-500.0, 500.0)
         self.evader_initial_z = evader_z
 
         # 组合成新的初始坐标数组
@@ -194,14 +197,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 dy = -initial_pos[1]
                 yaw = np.arctan2(dy, dx)
                 self.attacker_init_yaw = yaw # 记录一下攻击机的朝向
-            else:
-                # 强制战术夹角为 0 (纯尾追)
-                tactical_offset = 0.0 
-                # 保留 ±10度的微小扰动，防止过拟合
-                noise = np.random.uniform(-np.pi/18, np.pi/18)
-                yaw = self.attacker_init_yaw + tactical_offset + noise
-
-                '''
+            else:         
                 # ================= 课程学习 Stage 1.5：全向直线拦截 =================
                 # 引入四种经典的战术初始态势，并加入 ±15度 的随机扰动防止过拟合
                 
@@ -215,7 +211,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 noise = np.random.uniform(-np.pi/12, np.pi/12)
                 yaw = self.attacker_init_yaw + tactical_offset + noise
                 # ====================================================================
-                '''
+            
 
             # 根据真实偏航角分解 X 和 Y 方向的初始速度
             init_vel = [initial_speed * np.cos(yaw), initial_speed * np.sin(yaw), 0.0]
