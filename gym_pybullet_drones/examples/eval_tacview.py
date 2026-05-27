@@ -8,7 +8,7 @@ from mappo_model import MAPPOModel
 from marl_env import Drone1v1MARLEnv
 
 def evaluate_and_record():
-    print("🚀 启动 Ray RLlib -> Tacview 评估录像程序...")
+    print("启动 Ray RLlib -> Tacview 评估录像程序...")
     
     # 1. 实例化环境，强制开启 Tacview 记录
     # 评估时关闭 GUI (gui=False)，后台纯跑数据，生成极快
@@ -18,8 +18,8 @@ def evaluate_and_record():
     
     # 2. 尝试加载 RLlib 策略文件夹
     # 确保 policy_attacker 和 policy_evader 文件夹就在当前运行目录下
-    attacker_dir = os.path.abspath("./marl_runs/mappo_run_0526_1031/checkpoints/checkpoint_best_iter_001/policies/policy_attacker")
-    evader_dir = os.path.abspath("./marl_runs/mappo_run_0526_1031/checkpoints/checkpoint_best_iter_001/policies/policy_evader")
+    attacker_dir = os.path.abspath("./marl_runs/mappo_run_0526_1540/checkpoints/checkpoint_000500/policies/policy_attacker")
+    evader_dir = os.path.abspath("./marl_runs/mappo_run_0526_1540/checkpoints/checkpoint_000500/policies/policy_evader")
 
     policies = {}
     use_model = False
@@ -27,11 +27,11 @@ def evaluate_and_record():
     try:
         policies["attacker_0"] = Policy.from_checkpoint(attacker_dir)
         policies["evader_0"] = Policy.from_checkpoint(evader_dir)
-        print("✅ 成功加载 RLlib 策略权重！")
+        print("成功加载 RLlib 策略权重！")
         use_model = True
     except Exception as e:
-        print(f"⚠️ 策略加载失败，原因: {e}")
-        print("⚠️ 将使用【随机动作】进行回退测试...")
+        print(f"策略加载失败，原因: {e}")
+        print("将使用【随机动作】进行回退测试...")
         use_model = False
 
     # 3. 初始化环境
@@ -39,7 +39,7 @@ def evaluate_and_record():
     done = False
     step_count = 0
 
-    print("🎥 正在生成空战轨迹...")
+    print("正在生成空战轨迹...")
     
     # 4. 运行单局推演
     while not done:
@@ -67,8 +67,8 @@ def evaluate_and_record():
         done = terminations.get("__all__", False) or truncations.get("__all__", False)
         step_count += 1
 
-    print(f"🛑 回合结束，共执行了 {step_count} 个宏观决策步。")
-    print(f"✅ Tacview 日志文件已生成。")
+    print(f"回合结束，共执行了 {step_count} 个宏观决策步。")
+    print(f"Tacview 日志文件已生成。")
 
 if __name__ == "__main__":
     evaluate_and_record()

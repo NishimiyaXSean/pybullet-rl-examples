@@ -51,34 +51,6 @@ class DroneMetricsCallback(DefaultCallbacks):
         episode.hist_data["rate_oob"] = [1.0 if reason == "out_of_bounds" else 0.0]
         episode.hist_data["rate_timeout"] = [1.0 if reason == "timeout" else 0.0]
 
-    def on_train_result(self, *, algorithm, result, **kwargs):
-        """每次 train() 执行完后调用，用于评估是否需要升级课程"""
-        # 【核心修复】：兼容新版 RLlib，进入 env_runners 提取真实数据
-        stats = result.get("env_runners", result)
-        hist_stats = stats.get("hist_stats", {})
-        success_list = hist_stats.get("rate_success", [])
-        
-        # 至少积累了 100 局数据，才开始评估胜率 (防止初期因为样本少而导致的胜率虚高)
-        if len(success_list) >= 100:
-            # 计算最近 100 局的平均胜率
-            recent_success = sum(success_list[-100:]) / len(success_list[-100:])
-            
-            # 【升级条件】：胜率超过 60%，并且还没有达到满级 (Stage 3)
-            if recent_success >= 0.60 and self.current_stage < 3:
-                self.current_stage += 1
-                print(f"\n{'='*40}")
-                print(f"[课程学习触发] 胜率已达 {recent_success*100:.1f}%！")
-                print(f"战场扩容：全体环境升级至 Stage {self.current_stage}！")
-                print(f"{'='*40}\n")
-                
-                # 【核心操作】将新的难度阶段广播给后台所有的并行环境 Worker
-                algorithm.env_runner_group.foreach_env(
-                    lambda env: env.set_curriculum_stage(self.current_stage)
-                )
-        
-        # 将当前阶段写入 result，方便后面传入 TensorBoard
-        result["curriculum_stage"] = self.current_stage
-
 if __name__ == "__main__":
     # 1. 初始化 Ray 引擎
     ray.init()
@@ -170,6 +142,23 @@ if __name__ == "__main__":
 
     tb_writer = SummaryWriter(log_dir=PROJECT_ROOT)
 
+    # ====================================================================
+    # 初始化测试环境与全局课程变量
+    # ====================================================================
+    TEST_ENV = Drone1v1MARLEnv(gui=False)
+    CURRENT_STAGE = 1          # 假设你当前是从 Stage 1 继续训练
+    EVAL_INTERVAL = 10         # 每训练 10 次迭代，进行一次确定性压测
+    TEST_EPISODES = 50         # 每次压测 50 局
+    TARGET_SUCCESS_RATE = 0.80 # 晋级阈值：实测胜率达到 80% 升阶
+
+    # 初始化时强制对齐全军的 Stage
+    algo.env_runner_group.foreach_env(
+        lambda env: env.set_curriculum_stage(CURRENT_STAGE)
+    )
+    TEST_ENV.set_curriculum_stage(CURRENT_STAGE)
+    print(f"已强制全军（包含所有 Worker）进入初始阶段：Stage {CURRENT_STAGE}")
+    # ====================================================================
+
     # 7. 开始训练循环
     TRAIN_ITERATIONS = 500
     best_success_rate = -0.01
@@ -248,6 +237,59 @@ if __name__ == "__main__":
             tb_writer.add_scalar("2_Combat_Rates/Out_of_Bounds", oob_rate * 100, i+1)
             tb_writer.add_scalar("2_Combat_Rates/Timeout", timeout_rate * 100, i+1)
             tb_writer.add_scalar("5_Network_Stats/Entropy", entropy, i+1)
+            
+            # ====================================================================
+            # 植入实测与晋级循环
+            # ====================================================================
+            if (i + 1) % EVAL_INTERVAL == 0:
+                print(f"\n{'='*45}")
+                print(f"正在进行 Stage {CURRENT_STAGE} 确定性高压测试 ({TEST_EPISODES} 局)...")
+                
+                success_count = 0
+                for _ in range(TEST_EPISODES):
+                    obs, info = TEST_ENV.reset()
+                    terminated = {"__all__": False}
+                    truncated = {"__all__": False}
+                    final_reason = "timeout"
+                    
+                    while not (terminated["__all__"] or truncated["__all__"]):
+                        # 开启 explore=False 关闭高斯噪声，获取确定性最优动作
+                        action_A = algo.compute_single_action(obs["attacker_0"], policy_id="policy_attacker", explore=False)
+                        
+                        # 构建 actions 字典
+                        actions = {"attacker_0": action_A}
+                        if "evader_0" in obs:
+                            action_E = algo.compute_single_action(obs["evader_0"], policy_id="policy_evader", explore=False)
+                            actions["evader_0"] = action_E
+                            
+                        obs, rewards, terminated, truncated, infos = TEST_ENV.step(actions)
+                        
+                        if "attacker_0" in infos and "reason" in infos["attacker_0"]:
+                            final_reason = infos["attacker_0"]["reason"]
+                    
+                    if final_reason == "success":
+                        success_count += 1
+                
+                eval_success_rate = success_count / TEST_EPISODES
+                print(f"--> 实测完成！真实击杀率: {eval_success_rate*100:.1f}% ({success_count}/{TEST_EPISODES})")
+                
+                # 将真实的实测胜率写入 TensorBoard
+                tb_writer.add_scalar("2_Combat_Rates/Eval_Success_Rate", eval_success_rate * 100, i+1)
+                
+                # 判定是否满足晋级条件！
+                if eval_success_rate >= TARGET_SUCCESS_RATE and CURRENT_STAGE < 3:
+                    CURRENT_STAGE += 1
+                    print(f"突破瓶颈！真实胜率达标，全军晋级到 Stage {CURRENT_STAGE}！")
+                    
+                    # 将最新难度广播给底层所有并行搜集数据的 Workers
+                    algo.env_runner_group.foreach_env(
+                        lambda env: env.set_curriculum_stage(CURRENT_STAGE)
+                    )
+                    # 同时更新测试环境的难度
+                    TEST_ENV.set_curriculum_stage(CURRENT_STAGE)
+                    
+                print(f"{'='*45}\n")
+            # ====================================================================
             
             # RLlib 默认会将 policy 奖励存为 "policy_{policy_id}_reward"
             a_rewards_hist = hist_stats.get("policy_policy_attacker_reward", [])
