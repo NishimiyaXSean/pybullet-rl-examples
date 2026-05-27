@@ -166,7 +166,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
         # 3. 目标机强制取相反符号，确保永远出生在对角象限！
         evader_x = -sign_x * np.random.uniform(self.d_min, self.d_max)
         evader_y = -sign_y * np.random.uniform(self.d_min, self.d_max)
-        
+
         # 让目标机的高度以攻击机为基准，上下随机浮动 500 米
         # 这样攻击机有 50% 概率处于高位，50% 概率处于低位，必须学会全向俯仰机动！
         evader_z = attacker_z + np.random.uniform(-500.0, 500.0)
@@ -689,7 +689,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
 
             # [角色 1] 攻击机 (Attacker) 奖励结算
             if "attacker_0" in actions and not terminations["attacker_0"]:
-                TERMINAL_RADIUS = 800.0  # 定义末端冲刺阶段的判定半径
+                TERMINAL_RADIUS = 400.0  # 定义末端冲刺阶段的判定半径
 
                 # 计算双方的高度差 (Z轴距离)
                 dz = new_attacker_pos[2] - new_evader_pos[2]
@@ -704,10 +704,8 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 reward_A_z_advantage = 0.0
                 if dz > 0:
                     # 主机在上方：给予持续的正向能量奖励 (势能储备)
-                    reward_A_z_advantage = 0
-                else:
-                    # 主机在下方：给予较重的惩罚，逼迫它拉起机头爬升
-                    reward_A_z_advantage = dz * 0.005 * dt
+                    reward_A_z_advantage = dz * 0.001 * dt
+                # 【删除 dz < 0 时的惩罚】不要让它对低位产生恐惧，以免引发“垂直逃逸”
                 
                 reward_A_energy_loss = 0.0 
 
@@ -746,13 +744,11 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                     # 引入水平冲刺系数 
                     # 避免主机在最后一刻从天顶垂直“砸”向目标。只有当高度差极小时，才给予 100% 的速度冲刺奖励。高度差越大，冲刺奖励的折扣越狠。
                     z_alignment_factor = np.clip((200.0 - abs(dz)) / 200.0, 0.0, 1.0)
-                    # 计算速度在视线方向上的投影 (接近率)
-                    closing_speed = np.dot(attacker_vel, los_dir)
+                    closing_speed = np.dot(attacker_vel, los_dir) # 计算速度在视线方向上的投影 (接近率)
                     if closing_speed > 0:
                         reward_A_ramming = closing_speed * 0.05 * dt * z_alignment_factor
                     else:
                         reward_A_ramming = 0.0
-                    # ========================================================
                 else:
                     # --- 中程追踪阶段 (Mid-course Phase) ---
                     
@@ -770,43 +766,41 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                     # ==========================================================
                     reward_A_tracking = 0.0
                     
-                    # 1. 基础瞄准：机头必须试图看向敌机 (ATA)
-                    if cos_ata_attacker > 0.866:   # 30度内
-                        reward_A_tracking += 3.0 * dt
-                    elif cos_ata_attacker > 0.0:   # 前半球
-                        reward_A_tracking += cos_ata_attacker * 1.5 * dt
+                    # ==========================================================
+                    # 1. 废除极窄高斯尖峰，启用广域多项式梯度引导 (The Core Driver)
+                    # ==========================================================
+                    if cos_collision > 0.0:
+                        # 只要相对速度大致朝向目标，就给奖励。
+                        # 使用 3 次方：对准度一般时奖励低，越精准奖励呈指数级飙升，最高 +15.0
+                        reward_A_tracking += (cos_collision ** 3) * 15.0 * dt
                     else:
-                        reward_A_tracking -= 3.0 * dt # 严厉惩罚背对目标
-                        
-                    # 2. 阵位优势：必须试图进入敌机后半球 (AA)
-                    # cos_aa_attacker 越大，说明越靠近敌机正后方的 6 点钟盲区
-                    if cos_aa_attacker > 0.5: # 处于敌机后半球 60 度扇区
-                        reward_A_tracking += cos_aa_attacker * 2.0 * dt
-                    elif cos_aa_attacker < -0.5: # 处于敌机正前方危险区
+                        # 相对速度背离目标时，给予中等惩罚，逼迫它赶紧转弯改出
+                        reward_A_tracking -= 2.0 * dt
+
+                    # ==========================================================
+                    # 2. 弱化 ATA 惩罚，鼓励转身
+                    # ==========================================================
+                    # 只要机头在前半球，给予一点基础分
+                    if cos_ata_attacker > 0.0:
+                        reward_A_tracking += cos_ata_attacker * 2.0 * dt
+                    # 【核心修改】取消对负 ATA (背对目标) 的惩罚！
+                    # 让它在 Overshoot 之后，敢于在不扣分的环境下从容转弯
+
+                    # 3. 阵位优势：适度保留
+                    if cos_aa_attacker > 0.5: 
+                        reward_A_tracking += cos_aa_attacker * 1.5 * dt
+                    
+                    # 4. HCA 航向交叉角奖励 - 鼓励同向伴飞，惩罚迎头对冲
+                    if cos_hca > 0.0:
+                        # cos_hca > 0 表示双方夹角小于 90 度 (大致往同一个方向飞)
+                        # 给予小额奖励，鼓励航向对齐 (Trajectory Alignment)
+                        reward_A_tracking += cos_hca * 1.0 * dt
+                    elif cos_hca < -0.5:
+                        # cos_hca < -0.5 表示双方夹角大于 120 度 (正在迎头对冲)
+                        # 给予惩罚，警告它：“别像个莽夫一样迎头撞，滚去切敌机的尾部半径！”
                         reward_A_tracking -= 1.0 * dt
-
-                    # 3. 速度矢量对齐：防止交臂过冲 (HCA)
-                    # 同向飞行能极大降低相对闭合率，提供更充裕的击杀窗口
-                    if cos_hca > 0.866: # 航向差异小于 30 度
-                        reward_A_tracking += cos_hca * 1.5 * dt
-
-                    # ---------------------------------------------------------
-                    # 4. 【核心升级】高精度的碰撞截击与提前量引导 (Proportional Navigation Reward)
-                    # ---------------------------------------------------------
-                    # 将 cos 值转化为真实的弧度误差 [0, pi]
-                    collision_angle_rad = np.arccos(np.clip(cos_collision, -1.0, 1.0))
-
-                    # 设定极窄的容忍度标准差 sigma (例如 0.05 弧度，约等于 2.8 度)
-                    # 只有当速度矢量偏差极小时，才能拿到高分
-                    sigma_collision = 0.05 
-
-                    # 使用高斯函数 (指数衰减) 塑造尖峰。完全对准 (0度) 时给出极高的 +15.0 分
-                    precision_collision_reward = np.exp(-0.5 * (collision_angle_rad / sigma_collision)**2) * 15.0
-                    reward_A_tracking += precision_collision_reward * dt
-
-                    # ---------------------------------------------------------
-                    # 5. 【新增】横向侧滑惩罚 (Sideslip Penalty)
-                    # ---------------------------------------------------------
+        
+                    # 横向侧滑惩罚 (Sideslip Penalty)
                     # 惩罚飞机在进行追踪时出现的多余滚转或侧向速度，逼迫模型采用更有效率的纯垂直/水平机动
                     # local_vel[1] 是体轴坐标系下的 Y 轴速度 (侧滑速度)
                     sideslip_vel = abs(trusted_states["attacker_0"]["vel"][1])

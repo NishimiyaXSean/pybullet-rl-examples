@@ -159,7 +159,7 @@ if __name__ == "__main__":
     CURRENT_STAGE = 1          # 假设你当前是从 Stage 1 继续训练
     EVAL_INTERVAL = 10         # 每训练 10 次迭代，进行一次确定性压测
     TEST_EPISODES = 50         # 每次压测 50 局
-    TARGET_SUCCESS_RATE = 0.80 # 晋级阈值：实测胜率达到 80% 升阶
+    TARGET_SUCCESS_RATE = 0.75 # 晋级阈值：实测胜率达到 75% 升阶
 
     # 初始化时强制对齐全军的 Stage
     algo.env_runner_group.foreach_env(
