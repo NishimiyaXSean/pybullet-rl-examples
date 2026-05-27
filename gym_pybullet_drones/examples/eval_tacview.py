@@ -14,12 +14,15 @@ def evaluate_and_record():
     # 评估时关闭 GUI (gui=False)，后台纯跑数据，生成极快
     env = Drone1v1MARLEnv(gui=False, record_tacview=True)
 
+    env.set_curriculum_stage(2) 
+    print(f"当前录像环境已设置为：Stage {env.curriculum_stage}")
+
     ModelCatalog.register_custom_model("mappo_centralized_critic", MAPPOModel)
     
     # 2. 尝试加载 RLlib 策略文件夹
     # 确保 policy_attacker 和 policy_evader 文件夹就在当前运行目录下
-    attacker_dir = os.path.abspath("./marl_runs/mappo_run_0526_1540/checkpoints/checkpoint_000500/policies/policy_attacker")
-    evader_dir = os.path.abspath("./marl_runs/mappo_run_0526_1540/checkpoints/checkpoint_000500/policies/policy_evader")
+    attacker_dir = os.path.abspath("./marl_runs/mappo_run_0527_1047/checkpoints/checkpoint_000300/policies/policy_attacker")
+    evader_dir = os.path.abspath("./marl_runs/mappo_run_0527_1047/checkpoints/checkpoint_000300/policies/policy_evader")
 
     policies = {}
     use_model = False

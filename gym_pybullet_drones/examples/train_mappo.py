@@ -108,7 +108,13 @@ if __name__ == "__main__":
             train_batch_size=16384,
             minibatch_size=2048,
             lr=1e-4,
-            entropy_coeff=0.01,
+            # 【修改】：将固定的 0.01 替换为线性衰减策略
+            # 格式: [初始总步数, 初始熵系数, 结束总步数, 结束熵系数]
+            # 假设环境经过 180 万步时进入 Stage 2, 熵系数从 0.01 逐渐强制降到 0.0001，逼迫它收敛。
+            entropy_coeff_schedule=[
+                [1800000, 0.01], 
+                [10000000, 0.0001]
+            ],
             clip_param=0.2, # 限制价值函数的截断
             vf_clip_param=10.0,
             gamma=0.99,         # 折扣因子 (默认 0.99，越大越看重长期收益)
@@ -132,7 +138,7 @@ if __name__ == "__main__":
     print("="*45 + "\n")
 
     # 加载旧模型以继续训练
-    OLD_CHECKPOINT = os.path.abspath("./marl_runs/mappo_run_0525_2021/checkpoints/checkpoint_best_iter_121" )
+    OLD_CHECKPOINT = os.path.abspath("./marl_runs/mappo_run_0527_1047/checkpoints/checkpoint_best_iter_010" )
 
     if os.path.exists(OLD_CHECKPOINT):
         print(f"正在恢复旧模型记忆: {OLD_CHECKPOINT}")

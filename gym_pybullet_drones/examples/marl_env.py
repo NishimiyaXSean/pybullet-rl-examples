@@ -792,16 +792,29 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                     # 3. 速度矢量对齐：防止交臂过冲 (HCA)
                     # 同向飞行能极大降低相对闭合率，提供更充裕的击杀窗口
                     if cos_hca > 0.866: # 航向差异小于 30 度
-                        reward_A_tracking += 2.0 * dt
+                        reward_A_tracking += cos_hca * 1.5 * dt
 
-                    # 4. 碰撞截击：引导直线提前量 (Collision)
-                    if cos_collision > 0.95: 
-                        reward_A_tracking += 5.0 * dt
-                        
-                    # 5. 终极协同分：进入“黄金控制区” (Control Zone)
-                    # 必须同时满足：机头对准 (ATA)、在敌机屁股后面 (AA)、且同向飞行 (HCA)
-                    if cos_ata_attacker > 0.866 and cos_aa_attacker > 0.866 and cos_hca > 0.866:
-                        reward_A_tracking += 15.0 * dt # 给予极高的reward
+                    # ---------------------------------------------------------
+                    # 4. 【核心升级】高精度的碰撞截击与提前量引导 (Proportional Navigation Reward)
+                    # ---------------------------------------------------------
+                    # 将 cos 值转化为真实的弧度误差 [0, pi]
+                    collision_angle_rad = np.arccos(np.clip(cos_collision, -1.0, 1.0))
+
+                    # 设定极窄的容忍度标准差 sigma (例如 0.05 弧度，约等于 2.8 度)
+                    # 只有当速度矢量偏差极小时，才能拿到高分
+                    sigma_collision = 0.05 
+
+                    # 使用高斯函数 (指数衰减) 塑造尖峰。完全对准 (0度) 时给出极高的 +15.0 分
+                    precision_collision_reward = np.exp(-0.5 * (collision_angle_rad / sigma_collision)**2) * 15.0
+                    reward_A_tracking += precision_collision_reward * dt
+
+                    # ---------------------------------------------------------
+                    # 5. 【新增】横向侧滑惩罚 (Sideslip Penalty)
+                    # ---------------------------------------------------------
+                    # 惩罚飞机在进行追踪时出现的多余滚转或侧向速度，逼迫模型采用更有效率的纯垂直/水平机动
+                    # local_vel[1] 是体轴坐标系下的 Y 轴速度 (侧滑速度)
+                    sideslip_vel = abs(trusted_states["attacker_0"]["vel"][1])
+                    reward_A_tracking -= (sideslip_vel / self.MAX_SPEED) * 2.0 * dt
                
                 # 单帧结算
                 total_rewards["attacker_0"] += (

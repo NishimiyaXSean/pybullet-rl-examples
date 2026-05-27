@@ -16,7 +16,7 @@ from mappo_model import MAPPOModel
 
 from marl_env import Drone1v1MARLEnv
 
-RELATIVE_PATH = "./marl_runs/mappo_run_0526_1540/checkpoints/checkpoint_000500" 
+RELATIVE_PATH = "./marl_runs/mappo_run_0527_1047/checkpoints/checkpoint_best_iter_010" 
 CHECKPOINT_PATH = os.path.abspath(RELATIVE_PATH)
 
 def env_creator(config):
@@ -40,7 +40,7 @@ if __name__ == "__main__":
     # "STRESS_TEST" -> 后台极速运行 100 局，统计真实胜率
     # "VISUAL_TEST" -> 带有 3D 界面和图表分析的单局观看模式
     # ==========================================
-    RUN_MODE = "VISUAL_TEST" 
+    RUN_MODE = "STRESS_TEST" 
 
     if RUN_MODE == "STRESS_TEST":
         print("==================================")
@@ -50,6 +50,9 @@ if __name__ == "__main__":
         # 压测必须关闭 GUI 以解锁最高运算速度
         test_env = Drone1v1MARLEnv(gui=False)
         
+        # 【新增：强制对齐当前训练的课程阶段】
+        # test_env.set_curriculum_stage(2)
+
         TOTAL_EPISODES = 100
         stats = {"success": 0, "ground_crash": 0, "out_of_bounds": 0, "timeout": 0}
 
@@ -95,6 +98,9 @@ if __name__ == "__main__":
     elif RUN_MODE == "VISUAL_TEST":
 
         env = Drone1v1MARLEnv(gui=True)
+
+        env.set_curriculum_stage(2)
+
         print("==================================")
         print("1v1 多智能体对抗演习开始！")
         print("按键说明：[1-5] 切换运镜 | [ESC] 退出")
