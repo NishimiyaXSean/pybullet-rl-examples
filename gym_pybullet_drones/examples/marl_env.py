@@ -105,15 +105,15 @@ class Drone1v1MARLEnv(MultiAgentEnv):
         """定义每个难度阶段的具体出生范围"""
         if self.curriculum_stage == 1:
             # Stage 1: 近距超视距 (新手村)
-            self.d_min, self.d_max = 200.0, 600.0
+            self.d_min, self.d_max = 500.0, 800.0
             self.z_min, self.z_max = 1500.0, 2000.0
         elif self.curriculum_stage == 2:
             # Stage 2: 中距拉锯
-            self.d_min, self.d_max = 400.0, 900.0
+            self.d_min, self.d_max = 800.0, 1500.0
             self.z_min, self.z_max = 1800.0, 2500.0
         else:
             # Stage 3: 长程高空对决 (毕业期)
-            self.d_min, self.d_max = 700.0, 1500.0
+            self.d_min, self.d_max = 1500.0, 2500.0
             self.z_min, self.z_max = 2200.0, 3200.0
     def _compute_global_state(self):
         """
@@ -409,7 +409,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
         local_enemy_vel = np.array(local_enemy_vel)
 
         # 5. 物理量级缩放 (Pre-normalization) - 防止神经网络梯度爆炸
-        MAX_DIST = 5000.0     
+        MAX_DIST = 10000.0     
         MAX_HEIGHT = 5000.0
         MAX_VEL = 400.0    
         MAX_ANG_VEL = np.pi 
@@ -909,7 +909,8 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 break # 直接结束本轮 AI 决策的 repeat 循环
             
             # 2. 扩大化的武器制导圈 (WEZ) 与 脱靶量 (CPA) 结算 (全新逻辑)
-            elif new_dist < WEZ_RADIUS and raw_micro_delta > 0 and self.macro_step > 2:
+            # 增加限制: cos_ata_attacker > 0.5 (即机头与目标视线夹角必须小于 60 度)，确保是在"追击"而非"路过"
+            elif new_dist < WEZ_RADIUS and raw_micro_delta > 0 and self.macro_step > 2 and cos_ata_attacker > 0.5:
                 miss_distance = new_dist - raw_micro_delta # 倒推回上一微小帧的极小值 (真实脱靶量)
                 score_ratio = 1.0 - ((miss_distance - 50.0) / (WEZ_RADIUS - 50.0))
                 reward_terminal = 5000.0 * (np.clip(score_ratio, 0.0, 1.0) ** 2)
