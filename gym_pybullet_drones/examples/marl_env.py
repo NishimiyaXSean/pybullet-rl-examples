@@ -892,6 +892,9 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 total_rewards["evader_0"] += (reward_E_escape + reward_E_survival + reward_E_jinking + reward_E_straight + reward_E_ground_warning)
 
                 '''
+            # 将判定圈扩大为 1200m。只要进入射程，且距离开始拉大 (说明刚刚掠过最近相遇点)，直接结算！
+            WEZ_RADIUS = 1200.0
+            
             # 1. 动能撞击 / 击杀成功
             if new_dist < 50.0 and self.macro_step > 2: # 增加暖机帧保护
                 if not terminations["attacker_0"]: total_rewards["attacker_0"] += 5000.0
@@ -904,16 +907,12 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 infos["attacker_0"]["terminal_target_pos"] = new_evader_state[0:3].copy()
                 infos["attacker_0"]["reason"] = "success"
                 break # 直接结束本轮 AI 决策的 repeat 循环
-
-            # 2. 擦肩而过，触发近炸引信
-            # new_dist 是物理步进后的距离，dist 是步进前的距离。
-            # 如果进入杀伤圈，且距离开始拉大，说明刚刚掠过极小值点
-            elif new_dist < self.cpa_radius and raw_micro_delta > 0:
-                miss_distance = new_dist - raw_micro_delta # 取上一微小帧的极小值
-                
-                # 根据脱靶量计算梯度得分：基础分1000 + 4000 * (1 - (脱靶量 - 50.0) / 杀伤区间)
-                score_ratio = 1.0 - ((miss_distance - 50.0) / (self.cpa_radius - 50.0))
-                reward_terminal = 1000.0 + 4000.0 * np.clip(score_ratio, 0.0, 1.0)
+            
+            # 2. 扩大化的武器制导圈 (WEZ) 与 脱靶量 (CPA) 结算 (全新逻辑)
+            elif new_dist < WEZ_RADIUS and raw_micro_delta > 0 and self.macro_step > 2:
+                miss_distance = new_dist - raw_micro_delta # 倒推回上一微小帧的极小值 (真实脱靶量)
+                score_ratio = 1.0 - ((miss_distance - 50.0) / (WEZ_RADIUS - 50.0))
+                reward_terminal = 5000.0 * (np.clip(score_ratio, 0.0, 1.0) ** 2)
                 
                 # 双方进行分数结算 (零和博弈)
                 if "attacker_0" in total_rewards and not terminations["attacker_0"]: total_rewards["attacker_0"] += reward_terminal
