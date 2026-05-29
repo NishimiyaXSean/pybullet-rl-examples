@@ -2,7 +2,7 @@ import os
 import shutil  # 用于删除旧的最优模型文件夹
 import datetime
 current_time = datetime.datetime.now().strftime("%m%d_%H%M")
-PROJECT_ROOT = os.path.abspath(f"./marl_runs/run_{current_time}")
+PROJECT_ROOT = os.path.abspath(f"./marl_runs/mappo_run_{current_time}")
 os.environ['TUNE_RESULT_DIR'] = PROJECT_ROOT
 os.environ['RAY_RESULTS'] = PROJECT_ROOT
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'  # 解决 Windows 下 NumPy 和 PyTorch 的 OpenMP 冲突
@@ -16,6 +16,11 @@ import ray
 from ray.rllib.algorithms.ppo import PPOConfig
 from ray.tune.registry import register_env
 from ray.rllib.algorithms.callbacks import DefaultCallbacks
+
+# ================= 新增：引入自定义 MAPPO 网络和模型注册器 =================
+from ray.rllib.models import ModelCatalog
+from mappo_model import MAPPOModel
+# ====================================================================
 
 # 环境代码保存在 marl_env.py 中，类名叫 Drone1v1MARLEnv
 from marl_env import Drone1v1MARLEnv
@@ -33,30 +38,13 @@ def env_creator(config):
     return env
 
 class DroneMetricsCallback(DefaultCallbacks):
+    def __init__(self):
+        super().__init__()
+        self.current_stage = 1 # 初始化阶段
+
     def on_episode_end(self, *, worker, base_env, policies, episode, env_index, **kwargs):
-        # 尝试获取攻击机在最后一帧的 info 字典
         info = episode.last_info_for("attacker_0")
-
-        if info:
-            reason = info.get("reason", "timeout")
-        else:
-            reason = "timeout" # 如果没有 info，说明是时间耗尽平局
-        
-        '''
-        # 精细化拆解指标 (True -> 1.0, False -> 0.0)
-        # 1. 成功率: 真正进入有效射程
-        episode.custom_metrics["rate_success"] = 1.0 if reason == "success" else 0.0
-        
-        # 2. 坠地率
-        episode.custom_metrics["rate_crash"] = 1.0 if reason == "ground_crash" else 0.0
-        
-        # 3. 越界率
-        episode.custom_metrics["rate_oob"] = 1.0 if reason == "out_of_bounds" else 0.0
-        
-        # 4. 超时率: 目标机成功存活到了回合结束
-        episode.custom_metrics["rate_timeout"] = 1.0 if reason == "timeout" else 0.0
-
-        '''
+        reason = info.get("reason", "timeout") if info else "timeout"
 
         episode.hist_data["rate_success"] = [1.0 if reason == "success" else 0.0]
         episode.hist_data["rate_crash"] = [1.0 if reason == "ground_crash" else 0.0]
@@ -68,14 +56,17 @@ if __name__ == "__main__":
     ray.init()
 
     # 2. 注册环境名称
-    env_name = "drone_1v1_env"
+    env_name = "drone_1v1_mappo_env"
     register_env(env_name, env_creator)
+
+    # 向 RLlib 注册自定义的 MAPPO 模型
+    ModelCatalog.register_custom_model("mappo_centralized_critic", MAPPOModel)
 
     # 动态获取空间维度
     temp_env = env_creator({})
     obs_space = temp_env.observation_spaces["attacker_0"]
     act_space = temp_env.action_spaces["attacker_0"]
-    print(f"检测到环境观测空间维度: {obs_space.shape}, 动作空间: {act_space.n}")
+    print(f"检测到环境观测空间: {obs_space}, 动作空间维度: {act_space.shape}")
 
     # 3. 核心算法配置 (PPOConfig)
     config = (
@@ -85,7 +76,7 @@ if __name__ == "__main__":
         .resources(num_gpus=1 if torch.cuda.is_available() else 0)
         .env_runners(
             num_env_runners=4,
-            sample_timeout_s=300,      # 将超时容忍度从默认的 60 秒延长到 5 分钟
+            sample_timeout_s=300,       # 将超时容忍度从默认的 60 秒延长到 5 分钟
             rollout_fragment_length=256 # 细化数据包，避免单次收集太久
             ) 
         .callbacks(DroneMetricsCallback)
@@ -107,30 +98,35 @@ if __name__ == "__main__":
             policy_mapping_fn=lambda agent_id, episode, worker, **kwargs: 
                 "policy_attacker" if agent_id == "attacker_0" else "policy_evader",
 
-            # =============== 新增优化 ===============
             # 在 Phase 1 阶段，只训练攻击机的大脑，目标机大脑完全冻结不参与计算
             policies_to_train=["policy_attacker"]
-            # ========================================
         )
         
         # 5. 神经网络结构 (Net Arch)
         .training(
-            model={"fcnet_hiddens": [256, 256, 128], "fcnet_activation": "relu"},
+            model={"custom_model": "mappo_centralized_critic"},
             train_batch_size=16384,
             minibatch_size=2048,
             lr=3e-4,
-            entropy_coeff=0.1,
+            # 【修改】：将固定的 0.01 替换为线性衰减策略
+            # 格式: [初始总步数, 初始熵系数, 结束总步数, 结束熵系数]
+            # 假设环境经过 200 万步时进入 Stage 2, 熵系数从 0.01 逐渐强制降到 0.0001，逼迫它收敛。
+            entropy_coeff_schedule=[
+                [0, 0.02],         # 初始稍微提高一点点，给予破坏旧策略的动力
+                [500000, 0.01],    # 前 50 万步开始降温
+                [4000000, 0.001],  # 400万步时降到 0.001，逼迫战术成型
+                [8000000, 0.0001]
+            ],
             clip_param=0.2, # 限制价值函数的截断
-            vf_clip_param=10.0,
-            gamma=0.995,          # 折扣因子 (默认 0.99，越大越看重长期收益)
+            vf_clip_param=50.0,
+            gamma=0.999,         # 折扣因子 (越大越看重长期收益)
             lambda_=0.95,        # GAE 参数 (默认 0.95)
             kl_coeff=0.2,        # KL 散度惩罚系数 (默认 0.2)
         )
     )
 
     # 6. 构建算法对象
-    print("正在构建 RLlib 算法对象，请稍候...")
-
+    print("正在构建 RLlib MAPPO 算法对象，请稍候...")
     algo = config.build()
 
     # 创建独立的权重存放子文件夹
@@ -143,31 +139,49 @@ if __name__ == "__main__":
     print(f"tensorboard --logdir=\"{PROJECT_ROOT}\"")
     print("="*45 + "\n")
 
+    
     # 加载旧模型以继续训练
-    OLD_CHECKPOINT = os.path.abspath("./marl_runs/run_0522_1018/checkpoints/checkpoint_best_iter_085" )
+    OLD_CHECKPOINT = os.path.abspath("./marl_runs/mappo_run_0528_2109/checkpoints/checkpoint_best_iter_254" )
 
     if os.path.exists(OLD_CHECKPOINT):
         print(f"正在恢复旧模型记忆: {OLD_CHECKPOINT}")
         algo.restore(OLD_CHECKPOINT)
     else:
         print("未发现旧模型，将从随机初始化开始全新训练。")
-    
+
 
     tb_writer = SummaryWriter(log_dir=PROJECT_ROOT)
 
+    # ====================================================================
+    # 初始化测试环境与全局课程变量
+    # ====================================================================
+    TEST_ENV = Drone1v1MARLEnv(gui=False)
+    CURRENT_STAGE = 1          # 假设你当前是从 Stage 1 继续训练
+    EVAL_INTERVAL = 10         # 每训练 10 次迭代，进行一次确定性压测
+    TEST_EPISODES = 50         # 每次压测 50 局
+    TARGET_SUCCESS_RATE = 0.75 # 晋级阈值：实测胜率达到 75% 升阶
+
+    # 初始化时强制对齐全军的 Stage
+    algo.env_runner_group.foreach_env(
+        lambda env: env.set_curriculum_stage(CURRENT_STAGE)
+    )
+    TEST_ENV.set_curriculum_stage(CURRENT_STAGE)
+    print(f"已强制全军（包含所有 Worker）进入初始阶段：Stage {CURRENT_STAGE}")
+    # ====================================================================
+
     # 7. 开始训练循环
     TRAIN_ITERATIONS = 500
-    best_success_rate = -0.01   # 初始化成功率为 -0.01，这样可以确保第一轮训练（即使成功率是 0%）也能作为保底模型保存下来
+    best_success_rate = -0.01
     best_checkpoint_path = None    
-    global_episodes = 0  # 新增：全局回合计数器 
+    global_episodes = 0  # 全局回合计数器 
 
     print("==================================")
-    print("开始多智能体 1v1 空战对抗训练！")
+    print("开始 MAPPO 多智能体 1v1 空战对抗训练！")
     print("提示：在终端按下 【Ctrl + C】 可随时安全终止训练并保存模型！")
     print("==================================")
 
     try: 
-        for i in range(TRAIN_ITERATIONS): # 每一次迭代为train_batch_size = 8192步
+        for i in range(TRAIN_ITERATIONS): # 每一次迭代为train_batch_size
             # step() 会让所有 worker 跑环境，收集数据，更新神经网络，然后返回统计信息
             result = algo.train()
 
@@ -182,10 +196,10 @@ if __name__ == "__main__":
             # 提取总训练步数和本轮完成的回合数
             total_steps = result.get("num_env_steps_trained", 0)
 
-            # 【修复点1】获取本轮准确的回合数 (RLlib 的标准键名是 episodes_this_iter)
+            # 获取本轮准确的回合数
             episodes_this_iter = stats.get("episodes_this_iter", 0)
 
-            # ================= 核心修复：精准提取本轮迭代的真实统计 =================
+            # 精准提取本轮迭代的真实统计
             hist_stats = stats.get("hist_stats", {})
 
             # 提取历史记录列表 (RLlib 默认保留最近的 100 局)
@@ -194,7 +208,7 @@ if __name__ == "__main__":
             oob_list     = hist_stats.get("rate_oob", [])
             timeout_list = hist_stats.get("rate_timeout", [])
 
-            # 【修复点2】辅助函数：利用切片 (Slicing) 强制只取最后 N 局的数据
+            # 利用切片 (Slicing) 强制只取最后 N 局的数据
             def calc_iter_mean(lst, num_recent):
                 if num_recent <= 0 or not lst:
                     return 0.0
@@ -202,12 +216,10 @@ if __name__ == "__main__":
                 recent_lst = lst[-num_recent:]
                 return sum(recent_lst) / len(recent_lst)
 
-            # 现在的率值，严格等于本轮这二十多局的真实表现！
             success_rate = calc_iter_mean(success_list, episodes_this_iter)
             crash_rate   = calc_iter_mean(crash_list, episodes_this_iter)
             oob_rate     = calc_iter_mean(oob_list, episodes_this_iter)
             timeout_rate = calc_iter_mean(timeout_list, episodes_this_iter)
-            # =====================================================================
 
             # 提取策略熵 (Entropy) 
             learner_info = result.get("info", {}).get("learner", {})
@@ -236,12 +248,69 @@ if __name__ == "__main__":
             tb_writer.add_scalar("2_Combat_Rates/Timeout", timeout_rate * 100, i+1)
             tb_writer.add_scalar("5_Network_Stats/Entropy", entropy, i+1)
             
+            # ====================================================================
+            # 植入实测与晋级循环
+            # ====================================================================
+            if (i + 1) % EVAL_INTERVAL == 0:
+                print(f"\n{'='*45}")
+                print(f"正在进行 Stage {CURRENT_STAGE} 确定性高压测试 ({TEST_EPISODES} 局)...")
+                
+                success_count = 0
+                for _ in range(TEST_EPISODES):
+                    obs, info = TEST_ENV.reset()
+                    terminated = {"__all__": False}
+                    truncated = {"__all__": False}
+                    final_reason = "timeout"
+                    
+                    while not (terminated["__all__"] or truncated["__all__"]):
+                        # 开启 explore=False 关闭高斯噪声，获取确定性最优动作
+                        action_A = algo.compute_single_action(obs["attacker_0"], policy_id="policy_attacker", explore=False)
+                        
+                        # 构建 actions 字典
+                        actions = {"attacker_0": action_A}
+                        if "evader_0" in obs:
+                            action_E = algo.compute_single_action(obs["evader_0"], policy_id="policy_evader", explore=False)
+                            actions["evader_0"] = action_E
+                            
+                        obs, rewards, terminated, truncated, infos = TEST_ENV.step(actions)
+                        
+                        if "attacker_0" in infos and "reason" in infos["attacker_0"]:
+                            final_reason = infos["attacker_0"]["reason"]
+                    
+                    if final_reason == "success":
+                        success_count += 1
+                
+                eval_success_rate = success_count / TEST_EPISODES
+                print(f"--> 实测完成！真实击杀率: {eval_success_rate*100:.1f}% ({success_count}/{TEST_EPISODES})")
+                
+                # 将真实的实测胜率写入 TensorBoard
+                tb_writer.add_scalar("2_Combat_Rates/Eval_Success_Rate", eval_success_rate * 100, i+1)
+                
+                # 判定是否满足晋级条件！
+                if eval_success_rate >= TARGET_SUCCESS_RATE and CURRENT_STAGE < 3:
+                    CURRENT_STAGE += 1
+                    print(f"突破瓶颈！真实胜率达标，全军晋级到 Stage {CURRENT_STAGE}！")
+                    
+                    # 将最新难度广播给底层所有并行搜集数据的 Workers
+                    algo.env_runner_group.foreach_env(
+                        lambda env: env.set_curriculum_stage(CURRENT_STAGE)
+                    )
+                    # 同时更新测试环境的难度
+                    TEST_ENV.set_curriculum_stage(CURRENT_STAGE)
+                    
+                print(f"{'='*45}\n")
+            # ====================================================================
+            
             # RLlib 默认会将 policy 奖励存为 "policy_{policy_id}_reward"
             a_rewards_hist = hist_stats.get("policy_policy_attacker_reward", [])
             e_rewards_hist = hist_stats.get("policy_policy_evader_reward", [])
             
             # 你在 callback 里记录的 custom_metrics 也会原封不动保存在这里
             success_hist = hist_stats.get("rate_success", [])
+
+            # 【新增】将当前难度阶段画到图表里
+            current_stage = result.get("curriculum_stage", 1)
+            tb_writer.add_scalar("5_Network_Stats/Curriculum_Stage", current_stage, i+1)
 
             # 遍历这一轮收集到的所有完整回合
             for idx in range(len(a_rewards_hist)):
@@ -257,7 +326,6 @@ if __name__ == "__main__":
                 # 这在图表上会形成 0 和 1 的散点图，非常直观！
                 if idx < len(success_hist):
                     tb_writer.add_scalar("4_Micro_Events/Is_Success", success_hist[idx], global_episodes)
-            # ==============================================================
             
             tb_writer.flush() # 强制立刻写盘，绝不缓存延迟！
             

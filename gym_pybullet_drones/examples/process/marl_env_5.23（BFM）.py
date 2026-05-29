@@ -21,8 +21,8 @@ class Drone1v1MARLEnv(MultiAgentEnv):
         # 2. 实例化底层物理引擎 (CtrlAviary)
         # 将两架飞机分别放置在场地的对角线位置，拉开初始距离
         init_xyzs = np.array([
-            [-500.0, 0.0, 3000.0],  # attacker_0 的初始位置 (ID: 0)
-            [ 500.0, 0.0, 3000.0]   # evader_0   的初始位置 (ID: 1)
+            [-2000.0, -2000.0, 3000.0],  # attacker_0 的初始位置 (ID: 0)
+            [ 2000.0,  2000.0, 3000.0]   # evader_0   的初始位置 (ID: 1)
         ])
         
         self.pyb_env = CtrlAviary(
@@ -41,8 +41,8 @@ class Drone1v1MARLEnv(MultiAgentEnv):
 
         self.CTRL_FREQ = 60
         self.is_manual_mode = False
-        self.EPISODE_LEN_SEC = 60 # 回合最大时长
-        self.cpa_radius = 300.0   # 近炸引信触发半径
+        self.EPISODE_LEN_SEC = 45 # 回合最大时长
+        self.cpa_radius = 150.0     # 近炸引信触发半径
 
         # --- 战斗机飞行包线参数 (F-16/歼-10 级别模拟) ---
         self.MAX_G = 9.0          # 最大结构过载 (正G)
@@ -56,25 +56,31 @@ class Drone1v1MARLEnv(MultiAgentEnv):
         self.EVADER_SPEED_COEFF = 0.625  # 速度系数 (400 * 0.625 = 250 m/s)
         self.EVADER_G_COEFF = 0.555      # 过载系数 (9.0 * 0.555 ≈ 5.0 G)
 
-        # 动作空间：3维连续变量 [-1.0, 1.0]
-        # Action[0]: 切向加速度 (控制推力/减速板)
-        # Action[1]: 法向过载 (控制俯仰拉杆)
-        # Action[2]: 滚转角 (控制副翼)
+        # BFM 动作库: {动作编号 : (切向过载 n_x, 法向过载 n_n, 滚转角 mu)}
+        self.bfm_action_mapping = {
+            0:  ( 0,  1,  0.0),            # a1: 匀速直飞
+            1:  ( 2,  1,  0.0),            # a2: 加速直飞
+            2:  (-2,  1,  0.0),            # a3: 减速直飞
+            3:  ( 0,  8,  0.0),            # a4: 满G跃升
+            4:  ( 0, -2,  0.0),            # a5: 缓和俯冲 (修正不合理的 -8G)
+            5:  ( 0,  8,  np.pi / 2.2),    # a6: 极左转跃升 (约 81度，超大过载转弯)
+            6:  ( 0, -2, -np.pi / 2.2),    # a7: 右转俯冲 
+            7:  ( 0,  8, -np.pi / 2.2),    # a8: 极右转跃升
+            8:  ( 0, -2,  np.pi / 2.2),    # a9: 左转俯冲
+            9:  ( 0,  6, -np.pi / 2.0),    # a10: 纯右转盘旋 (90度滚转)
+            10: ( 0,  6,  np.pi / 2.0)     # a11: 纯左转盘旋
+        }
+
+        # 3. 字典化的观测空间与动作空间
+        # 动作空间：两者均为 11 维离散动作 (BFM)
         self.action_spaces = {
-            agent: gym.spaces.Box(low=-1.0, high=1.0, shape=(3,), dtype=np.float32)
+            agent: gym.spaces.Discrete(11) 
             for agent in self.possible_agents
         }
         
-        # MAPPO 专属 Dict 观测空间
-        # 假设全局状态包含2架飞机的绝对物理参数：位置(3)+四元数(4)+线速度(3)+角速度(3) = 13维/架
-        # 1v1 的总全局维度为 26。未来如果是 2v2，这里相应增加即可。
-        self.GLOBAL_STATE_DIM = 26 
-        
+        # 观测空间：各自的第一人称视角 (原为19维，可根据后续设计调整)
         self.observation_spaces = {
-            agent: gym.spaces.Dict({
-                "obs": gym.spaces.Box(low=-np.inf, high=np.inf, shape=(19,), dtype=np.float32),
-                "global_state": gym.spaces.Box(low=-np.inf, high=np.inf, shape=(self.GLOBAL_STATE_DIM,), dtype=np.float32)
-            })
+            agent: gym.spaces.Box(low=-1.0, high=1.0, shape=(19,), dtype=np.float32)
             for agent in self.possible_agents
         }
 
@@ -93,59 +99,6 @@ class Drone1v1MARLEnv(MultiAgentEnv):
             log_filename = f"drone_eval_{timestamp}.txt.acmi"
             self.tacview_logger = TacviewLogger(filename=log_filename)
 
-        self.curriculum_stage = 1
-        self._update_curriculum_bounds()
-
-    def set_curriculum_stage(self, stage):
-        """供外部 RLlib 算法调用的难度调节接口"""
-        self.curriculum_stage = stage
-        self._update_curriculum_bounds()
-
-    def _update_curriculum_bounds(self):
-        """定义每个难度阶段的具体出生范围"""
-        if self.curriculum_stage == 1:
-            # Stage 1: 近距超视距 (新手村)
-            self.d_min, self.d_max = 500.0, 800.0
-            self.z_min, self.z_max = 1500.0, 2000.0
-        elif self.curriculum_stage == 2:
-            # Stage 2: 中距拉锯
-            self.d_min, self.d_max = 800.0, 1500.0
-            self.z_min, self.z_max = 1800.0, 2500.0
-        else:
-            # Stage 3: 长程高空对决 (毕业期)
-            self.d_min, self.d_max = 1500.0, 2500.0
-            self.z_min, self.z_max = 2200.0, 3200.0
-    def _compute_global_state(self):
-        """
-        为 MAPPO 的 Critic 提取全知全能的全局状态 (Global State)
-        """
-        global_state = []
-        
-        # 遍历所有可能存在的飞机 (注意使用 self.possible_agents 保证顺序和维度固定)
-        for i, agent in enumerate(self.possible_agents):
-            if agent in self.agents:
-                # 【核心修复点】
-                # _getDroneStateVector 必须传入内部索引 (0 或是 1)，不能传 PyBullet 实体 ID
-                state_vec = self.pyb_env._getDroneStateVector(i)
-                
-                # 提取: 绝对位置(3), 四元数姿态(4), 绝对速度(3), 绝对角速度(3)
-                pos = state_vec[0:3] / 5000.0          # 归一化位置
-                quat = state_vec[3:7]                  # 四元数本身就在 [-1, 1]
-                vel = state_vec[10:13] / self.MAX_SPEED # 归一化速度
-                ang_vel = state_vec[13:16] / np.pi      # 归一化角速度
-                
-                agent_state = np.concatenate([pos, quat, vel, ang_vel])
-            else:
-                # 填充死亡零向量 (Padding)
-                # 在 N vs M 中，如果有飞机被击落，必须用全 0 占位以保证神经网络输入维度不变
-                agent_state = np.zeros(13, dtype=np.float32)
-                
-            global_state.append(agent_state)
-            
-        # 拼接成一个展平的一维大向量
-        global_array = np.concatenate(global_state).astype(np.float32)
-        return np.clip(global_array, -1.0, 1.0)
-
     def reset(self, seed=None, options=None):
         """
         环境重置，必须返回两个字典：obs_dict, info_dict
@@ -159,17 +112,14 @@ class Drone1v1MARLEnv(MultiAgentEnv):
         sign_y = np.random.choice([-1, 1])
 
         # 2. 在该象限内，生成初始距离
-        attacker_x = sign_x * np.random.uniform(self.d_min, self.d_max)
-        attacker_y = sign_y * np.random.uniform(self.d_min, self.d_max)
-        attacker_z = np.random.uniform(self.z_min, self.z_max)
+        attacker_x = sign_x * np.random.uniform(500.0, 1500.0)
+        attacker_y = sign_y * np.random.uniform(500.0, 1500.0)
+        attacker_z = np.random.uniform(1500.0, 2000.0) 
 
         # 3. 目标机强制取相反符号，确保永远出生在对角象限！
-        evader_x = -sign_x * np.random.uniform(self.d_min, self.d_max)
-        evader_y = -sign_y * np.random.uniform(self.d_min, self.d_max)
-
-        # 让目标机的高度以攻击机为基准，上下随机浮动 500 米
-        # 这样攻击机有 50% 概率处于高位，50% 概率处于低位，必须学会全向俯仰机动！
-        evader_z = attacker_z + np.random.uniform(-500.0, 500.0)
+        evader_x = -sign_x * np.random.uniform(500.0, 1500.0)
+        evader_y = -sign_y * np.random.uniform(500.0, 1500.0)
+        evader_z = np.random.uniform(1000.0, 1500.0)
         self.evader_initial_z = evader_z
 
         # 组合成新的初始坐标数组
@@ -197,7 +147,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 dy = -initial_pos[1]
                 yaw = np.arctan2(dy, dx)
                 self.attacker_init_yaw = yaw # 记录一下攻击机的朝向
-            else:         
+            else:
                 # ================= 课程学习 Stage 1.5：全向直线拦截 =================
                 # 引入四种经典的战术初始态势，并加入 ±15度 的随机扰动防止过拟合
                 
@@ -209,9 +159,9 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 
                 # 添加随机扰动 (约 ±15 度)
                 noise = np.random.uniform(-np.pi/12, np.pi/12)
+                
                 yaw = self.attacker_init_yaw + tactical_offset + noise
                 # ====================================================================
-            
 
             # 根据真实偏航角分解 X 和 Y 方向的初始速度
             init_vel = [initial_speed * np.cos(yaw), initial_speed * np.sin(yaw), 0.0]
@@ -226,8 +176,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
         # 初始化时间步与两架飞机的局部追踪变量
         self.step_counter = 0  # 留着给底层备用
         self.macro_step = 0    # 真正的宏观决策步数
-        # 初始动作占位符必须是 3 维 NumPy 零向量
-        self.last_actions = {agent: np.zeros(3, dtype=np.float32) for agent in self.agents}
+        self.last_actions = {agent: 0 for agent in self.agents}
     
         # 计算开局时的初始距离 (用于第一帧的奖励计算基准)
         attacker_pos = self.pyb_env._getDroneStateVector(0)[0:3]
@@ -237,11 +186,6 @@ class Drone1v1MARLEnv(MultiAgentEnv):
         # 记录上一帧的 ATA 余弦值，用于计算趋势
         self.last_cos_ata_A = 1.0
 
-        # ================= 课程学习 Stage 1.0：移动打靶 =================
-        # 【降维】强制目标机只能直飞
-        self.evader_maneuver = "straight"
-
-        '''
         # ================= 课程学习 Stage 2：随机化目标机盘旋 =================
         # 随机决定本回合目标机的机动策略。
         # 概率分布：40% 直飞，30% 左转，30% 右转
@@ -251,14 +195,9 @@ class Drone1v1MARLEnv(MultiAgentEnv):
         )
         # ====================================================================
     
-        '''
-        global_state_array = self._compute_global_state()
         obs_dict = {
-            agent: {
-                "obs": self._compute_obs(agent),
-                "global_state": global_state_array
-            }
-            for agent in self.agents
+            "attacker_0": self._compute_obs("attacker_0"),
+            "evader_0": self._compute_obs("evader_0")
         }
         
         info_dict = {agent: {} for agent in self.agents}
@@ -409,7 +348,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
         local_enemy_vel = np.array(local_enemy_vel)
 
         # 5. 物理量级缩放 (Pre-normalization) - 防止神经网络梯度爆炸
-        MAX_DIST = 10000.0     
+        MAX_DIST = 5000.0     
         MAX_HEIGHT = 5000.0
         MAX_VEL = 400.0    
         MAX_ANG_VEL = np.pi 
@@ -461,19 +400,12 @@ class Drone1v1MARLEnv(MultiAgentEnv):
         attacker_id = 0
         evader_id = 1
 
-        # --- [修改后] ---
-        # 动作平滑度惩罚 (连续动作空间专属)
+        # 动作连续性惩罚
         for agent, act in actions.items():
-            last_act = self.last_actions.get(agent, np.zeros(3, dtype=np.float32))
-            
-            # 计算这一帧和上一帧推杆动作的差异大小 (欧氏距离 L2 Norm)
-            action_delta = np.linalg.norm(act - last_act)
-            
-            # 根据猛推摇杆的剧烈程度给予惩罚 (系数 0.1 比较温和，鼓励丝滑微调)
-            total_rewards[agent] -= 0.1 * action_delta 
-            
-            # 存入本帧动作，必须使用 .copy() 防止内存地址的引用污染
-            self.last_actions[agent] = np.array(act).copy()
+            if act != self.last_actions.get(agent, 0):
+                # 每次切换动作，扣除一点体力分，逼迫其保持动作连贯
+                total_rewards[agent] -= 0.5 
+            self.last_actions[agent] = act
 
         attacker_state_init = self.pyb_env._getDroneStateVector(attacker_id)
         evader_state_init = self.pyb_env._getDroneStateVector(evader_id)
@@ -499,21 +431,8 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                     continue
 
                 pyb_id = self.pyb_env.DRONE_IDS[i] if hasattr(self.pyb_env, 'DRONE_IDS') else self.pyb_env.drone_ids[i]
-                
-                # ================= 新增：连续动作解包与线性映射 =================
-                # 确保获取的是 3 维 NumPy 数组，并且限制在 [-1, 1] 之间以防异常值
-                action_vec = np.clip(actions[agent], -1.0, 1.0)
-                
-                # 1. 切向过载 (n_x): 映射到 [-2.0, 2.0]
-                n_x_cmd = action_vec[0] * 2.0
-                
-                # 2. 法向过载 (n_n): 映射到 [MIN_G, MAX_G]
-                # 公式: MIN + (MAX - MIN) * (val + 1) / 2
-                n_n_cmd = self.MIN_G + (self.MAX_G - self.MIN_G) * (action_vec[1] + 1.0) / 2.0
-                
-                # 3. 滚转角 (mu): 映射到 [-180度, 180度] 即 [-pi, pi]
-                mu_cmd = action_vec[2] * np.pi
-                # ================================================================
+                action_int = int(actions[agent])
+                n_x_cmd, n_n_cmd, mu_cmd = self.bfm_action_mapping[action_int]
 
                 # ================= Phase 2 干预：注入完美的水平盘旋 =================
                 if agent == "evader_0":
@@ -525,10 +444,8 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                         n_x_cmd = 0.0
                         n_n_cmd = 2.0
                         mu_cmd = -np.pi / 3.0  # 向右 60度滚转
-                    else: # 直飞
-                        n_x_cmd = 0.0
-                        n_n_cmd = 1.0
-                        mu_cmd = 0.0
+                    else:
+                        n_x_cmd, n_n_cmd, mu_cmd = self.bfm_action_mapping[0] # 直飞
                 # ====================================================================
                 
                 current_max_speed = self.MAX_SPEED
@@ -545,10 +462,10 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 agent_current_z = pos[2]
 
                 # GPWS 近地警告覆盖
-                # 如果低于 800 米，且具有超过 5m/s 的下坠速度，强制接管
-                if agent_current_z < 800.0 and vel[2] < -5.0:  
-                    n_n_cmd = current_max_g  # 强制给足最大过载拉起
-                    mu_cmd = 0.0             # 强制改平
+                if agent_current_z < 500.0 and vel[2] < 0:  # 高度低于500米且具有向下的速度
+                    n_n_cmd = current_max_g  # 强制给足 9G 拉起
+                    mu_cmd = 0.0             # 强制改平滚转角，确保升力完全指向上方
+                    total_rewards[agent] -= 2.0 * dt  # 给予严厉惩罚，让 AI 知道低空俯冲是禁区
 
                 V = np.linalg.norm(vel)
                 if V < 1e-3: V = 1e-3  # 防止除以 0
@@ -585,8 +502,6 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 
                 # 欧拉积分更新状态
                 new_V = V + V_dot * dt
-                # 新增防超速与防倒车机制
-                new_V = np.clip(new_V, self.STALL_SPEED, current_max_speed)
                 new_gamma = gamma + gamma_dot * dt
                 new_chi = chi + chi_dot * dt
                 
@@ -648,8 +563,152 @@ class Drone1v1MARLEnv(MultiAgentEnv):
             if hasattr(self.pyb_env, '_updateAndStoreKinematicInformation'):
                 self.pyb_env._updateAndStoreKinematicInformation()
 
+            # ======== 新增：记录 Tacview 帧 ========
+            if getattr(self, 'record_tacview', False):
+                current_time = self.step_counter / self.CTRL_FREQ
+                self._record_tacview_frame(time_sec=current_time)
+            # =======================================
+
             # 重新提取一次绝对干净的物理状态...
             new_attacker_state = self.pyb_env._getDroneStateVector(attacker_id)
+
+            # 1:1 真实物理平滑渲染与电影级运镜
+            if self.pyb_env.GUI:
+                import time
+                time.sleep(1 / self.CTRL_FREQ)  # 强制同步现实时间
+                
+                # 实时更新新坐标
+                cur_attacker_pos = self.pyb_env._getDroneStateVector(attacker_id)[0:3]
+                cur_evader_pos = self.pyb_env._getDroneStateVector(evader_id)[0:3]
+                
+                # 更新目标机身上的“幽灵引信球”位置
+                if self.fuze_obj_id != -1:
+                    p.resetBasePositionAndOrientation(self.fuze_obj_id, cur_evader_pos, [0, 0, 0, 1], physicsClientId=self.pyb_env.CLIENT)
+
+                # ================= 更新雷达标记点 =================
+                if hasattr(self, 'radar_marker_A'):
+                    p.resetBasePositionAndOrientation(self.radar_marker_A, cur_attacker_pos, [0, 0, 0, 1], physicsClientId=self.pyb_env.CLIENT)
+                if hasattr(self, 'radar_marker_E'):
+                    p.resetBasePositionAndOrientation(self.radar_marker_E, cur_evader_pos, [0, 0, 0, 1], physicsClientId=self.pyb_env.CLIENT)
+                # =================================================
+                
+                # 键盘运镜切换监听
+                keys = p.getKeyboardEvents(physicsClientId=self.pyb_env.CLIENT)
+                if ord('1') in keys and keys[ord('1')] & p.KEY_WAS_TRIGGERED: self.camera_mode = 1
+                if ord('2') in keys and keys[ord('2')] & p.KEY_WAS_TRIGGERED: self.camera_mode = 2
+                if ord('3') in keys and keys[ord('3')] & p.KEY_WAS_TRIGGERED: self.camera_mode = 3
+                if ord('4') in keys and keys[ord('4')] & p.KEY_WAS_TRIGGERED: self.camera_mode = 4
+                if ord('5') in keys and keys[ord('5')] & p.KEY_WAS_TRIGGERED: self.camera_mode = 5
+
+                # 平滑画出红色(主机)与黄色(目标机)的 3D 轨迹尾迹
+                p.addUserDebugLine(self.last_draw_pos, cur_attacker_pos, [1, 0, 0], 2.5, 3.0, physicsClientId=self.pyb_env.CLIENT)
+                p.addUserDebugLine(self.last_target_draw_pos, cur_evader_pos, [1, 1, 0], 2.5, 3.0, physicsClientId=self.pyb_env.CLIENT)
+                self.last_draw_pos = cur_attacker_pos.copy()
+                self.last_target_draw_pos = cur_evader_pos.copy()
+
+                # ================= HUD 文字与战术几何计算 =================
+                # 1. 获取双方实时状态
+                state_A = self.pyb_env._getDroneStateVector(attacker_id)
+                state_E = self.pyb_env._getDroneStateVector(evader_id)
+                
+                pos_A, vel_A = state_A[0:3], state_A[10:13]
+                pos_E, vel_E = state_E[0:3], state_E[10:13]
+                
+                alt_A, speed_A = pos_A[2], np.linalg.norm(vel_A)
+                alt_E, speed_E = pos_E[2], np.linalg.norm(vel_E)
+
+                # 2. 计算真实的战术夹角
+                los_vec = pos_E - pos_A
+                dist_cam = np.linalg.norm(los_vec)
+                los_dir = los_vec / (dist_cam + 1e-6)
+                
+                # 提取主机真实机头指向 (通过四元数转旋转矩阵的第一列)
+                rot_mat_A = p.getMatrixFromQuaternion(state_A[3:7])
+                forward_A = np.array([rot_mat_A[0], rot_mat_A[3], rot_mat_A[6]])
+                
+                # 真实 ATA (天线偏角): 机头指向与视线的夹角
+                ata_deg = np.degrees(np.arccos(np.clip(np.dot(forward_A, los_dir), -1.0, 1.0)))
+                
+                # 碰撞角偏差 (Collision Error): 相对速度与视线的夹角
+                rel_vel = vel_A - vel_E
+                rel_vel_dir = rel_vel / (np.linalg.norm(rel_vel) + 1e-6)
+                collision_err_deg = np.degrees(np.arccos(np.clip(np.dot(rel_vel_dir, los_dir), -1.0, 1.0)))
+
+                # 提取目标机滚转角 (观察 2G 盘旋是否保持在完美的 60 度)
+                roll_E_deg = np.degrees(state_E[7])
+
+                # 3. 极简单行字符串设计 (杜绝任何多行重叠隐患)
+                # 主机：距离、ATA、碰撞偏差角
+                hud_A_text = f"[A] Dist:{dist_cam:.0f}m | Spd:{speed_A:.0f}m/s | ATA:{ata_deg:.1f}* | Coll:{collision_err_deg:.1f}*"
+                # 目标机：空速、滚转角 (用来监控盘旋靶是否正常飞)
+                hud_E_text = f"[E] Spd:{speed_E:.0f}m/s | Roll:{roll_E_deg:.0f}*"
+
+                # 4. 绑定与绘制
+                drone_id_A = self.pyb_env.DRONE_IDS[0] if hasattr(self.pyb_env, 'DRONE_IDS') else self.pyb_env.drone_ids[0]
+                drone_id_E = self.pyb_env.DRONE_IDS[1] if hasattr(self.pyb_env, 'DRONE_IDS') else self.pyb_env.drone_ids[1]
+
+                # 初始化 ID 占位符
+                if not hasattr(self, 'hud_A_id'): self.hud_A_id = -1
+                if not hasattr(self, 'hud_E_id'): self.hud_E_id = -1
+
+                # 将文字挂在飞机正上方 2.5 米处
+                if self.hud_A_id == -1:
+                    self.hud_A_id = p.addUserDebugText(hud_A_text, [0, 0, 2.5], textColorRGB=[0.1, 0.4, 1.0], textSize=1.2, parentObjectUniqueId=drone_id_A, physicsClientId=self.pyb_env.CLIENT)
+                else:
+                    self.hud_A_id = p.addUserDebugText(hud_A_text, [0, 0, 2.5], textColorRGB=[0.1, 0.4, 1.0], textSize=1.2, parentObjectUniqueId=drone_id_A, replaceItemUniqueId=self.hud_A_id, physicsClientId=self.pyb_env.CLIENT)
+                
+                if self.hud_E_id == -1:
+                    self.hud_E_id = p.addUserDebugText(hud_E_text, [0, 0, 2.5], textColorRGB=[1.0, 0.2, 0.2], textSize=1.2, parentObjectUniqueId=drone_id_E, physicsClientId=self.pyb_env.CLIENT)
+                else:
+                    self.hud_E_id = p.addUserDebugText(hud_E_text, [0, 0, 2.5], textColorRGB=[1.0, 0.2, 0.2], textSize=1.2, parentObjectUniqueId=drone_id_E, replaceItemUniqueId=self.hud_E_id, physicsClientId=self.pyb_env.CLIENT)
+                
+                # 视线连线
+                p.addUserDebugLine(cur_attacker_pos, cur_evader_pos, [0, 1, 1], 1.5, 1.5 / self.CTRL_FREQ, physicsClientId=self.pyb_env.CLIENT)
+                
+                # 绘制动态高度投影线 (直达海平面 Z=0)
+                # 无论镜头拉多远，都能通过这根“柱子”看清飞机在全局的位置
+                p.addUserDebugLine(cur_attacker_pos, [cur_attacker_pos[0], cur_attacker_pos[1], 0.0], [0.1, 0.4, 1.0], 1.5, 1.5 / self.CTRL_FREQ, physicsClientId=self.pyb_env.CLIENT)
+                p.addUserDebugLine(cur_evader_pos, [cur_evader_pos[0], cur_evader_pos[1], 0.0], [1.0, 0.2, 0.2], 1.5, 1.5 / self.CTRL_FREQ, physicsClientId=self.pyb_env.CLIENT)
+
+                # 计算两架飞机的空间中点 (Midpoint)
+                mid_pos = (cur_attacker_pos + cur_evader_pos) / 2.0
+
+                # 提取双方真实姿态用于镜头对齐
+                attacker_rpy = self.pyb_env._getDroneStateVector(attacker_id)[7:10]
+                evader_rpy = self.pyb_env._getDroneStateVector(evader_id)[7:10]
+                smooth_yaw_A = np.degrees(attacker_rpy[2]) 
+                smooth_yaw_E = np.degrees(evader_rpy[2]) 
+
+                # 相机平滑跟随缓动
+                self.cam_pos = self.cam_pos * 0.9 + cur_attacker_pos * 0.1
+
+                if self.camera_mode == 1:
+                    # Mode 1: 经典第三人称尾随视角
+                    p.resetDebugVisualizerCamera(100.0, smooth_yaw_A - 90, -10, self.cam_pos, physicsClientId=self.pyb_env.CLIENT)
+                
+                elif self.camera_mode == 2:
+                    # Mode 2: 战术俯视地图 (Top-down Tactical Map)
+                    # 距离动态适应，但增加下限防止过近，上限限制在 8000 保证可视度
+                    tactical_dist = np.clip(dist_cam * 1.5, 4000.0, 8000.0) 
+                    p.resetDebugVisualizerCamera(tactical_dist, 0, -89.9, mid_pos, physicsClientId=self.pyb_env.CLIENT)
+                
+                elif self.camera_mode == 3:
+                    # Mode 3: 动态狗斗视角 (Over-the-shoulder)
+                    view_yaw = np.degrees(np.arctan2(cur_evader_pos[1] - cur_attacker_pos[1], cur_evader_pos[0] - cur_attacker_pos[0]))
+                    dynamic_dist = np.clip(dist_cam * 1.2, 150.0, 4000.0) 
+                    p.resetDebugVisualizerCamera(dynamic_dist, view_yaw - 90, -15, mid_pos, physicsClientId=self.pyb_env.CLIENT)
+                
+                elif self.camera_mode == 4:
+                    # Mode 4: 目标锁定抵近视角 (Target Tracking)
+                    # 修复：提取目标机的 Yaw 角进行追踪
+                    p.resetDebugVisualizerCamera(200.0, smooth_yaw_E - 90, -20, cur_evader_pos, physicsClientId=self.pyb_env.CLIENT)
+                
+                elif self.camera_mode == 5:
+                    # Mode 5: 全局大尺度远景 (God's Eye)
+                    # 将锚点从静态原点改为两机中点，确保交战空域永远在画面正中心
+                    # 借助新增的垂直投影线，即使飞机变成小点也能清晰辨别
+                    god_view_dist = np.clip(dist_cam * 2.5, 6000.0, 10000.0)
+                    p.resetDebugVisualizerCamera(god_view_dist, 45, -30, mid_pos, physicsClientId=self.pyb_env.CLIENT)
 
             # 在微小帧内，重新计算战术几何 (ATA, AA, HCA)
             # 1. 从当前帧的状态中提取双方的真实物理四元数
@@ -662,6 +721,8 @@ class Drone1v1MARLEnv(MultiAgentEnv):
 
             # 3. 提取双方的 3D 机头指向向量 (即旋转矩阵的 X 轴正方向)
             # PyBullet 的旋转矩阵是一维数组，X轴对应索引 [0, 3, 6]
+            rot_mat_A = p.getMatrixFromQuaternion(attacker_quat)
+            rot_mat_E = p.getMatrixFromQuaternion(evader_quat)
             forward_vec_A = np.array([rot_mat_A[0], rot_mat_A[3], rot_mat_A[6]])
             forward_vec_E = np.array([rot_mat_E[0], rot_mat_E[3], rot_mat_E[6]])
             
@@ -689,44 +750,29 @@ class Drone1v1MARLEnv(MultiAgentEnv):
 
             # [角色 1] 攻击机 (Attacker) 奖励结算
             if "attacker_0" in actions and not terminations["attacker_0"]:
-                TERMINAL_RADIUS = 400.0  # 定义末端冲刺阶段的判定半径
+                TERMINAL_RADIUS = 800.0  # 定义末端冲刺阶段的判定半径
 
                 # 计算双方的高度差 (Z轴距离)
                 dz = new_attacker_pos[2] - new_evader_pos[2]
 
                 # 1. 靠近奖励 (全局生效：缩短距离加分，被拉开扣分)
-                reward_A_progress = -micro_delta_dist * 0.05
-                reward_A_progress = np.clip(reward_A_progress, -2.0, 2.0)
+                reward_A_progress = -micro_delta_dist * 2.0 
+                reward_A_progress = np.clip(reward_A_progress, -10.0, 10.0)
+                reward_A_distance_penalty = - (new_dist / 1000.0) * 1.5 * dt  # 绝对距离势能惩罚
 
                 # 2. 时间惩罚 (全局生效：逼迫速战速决)
-                reward_A_time = -1.0 * dt
+                reward_A_time = -0.1 * dt
 
-                reward_A_z_advantage = 0.0
-                # 【核心修改】：只有当机头大致朝向敌方 (进攻态势) 时，高度优势才给分！
-                if dz > 0 and cos_ata_attacker > -0.2:
-                    # 限制最大势能差额为 1000 米，防止无限爬升
-                    reward_A_z_advantage = np.clip(dz, 0.0, 1000.0) * 0.002 * dt
-                
-                reward_A_energy_loss = 0.0 
+                # 全向高度对齐惩罚
+                reward_A_z_penalty = -abs(dz) * 0.005 * dt 
 
-                # reward_A_energy_loss = -((n_n - 1.0) ** 2) * 0.08 * dt  # 新增能量管理惩罚
+                reward_A_energy_loss = -((n_n - 1.0) ** 2) * 0.08 * dt  # 新增能量管理惩罚
 
                 # 攻击机软地板警告 
                 reward_A_ground_warning = 0.0
-                if new_attacker_pos[2] < 1000.0:  
-                    # 高度越低，惩罚呈指数级上升
-                    depth_ratio = (1000.0 - new_attacker_pos[2]) / 1000.0
-                    reward_A_ground_warning = -(depth_ratio ** 2) * 5.0 * dt
+                if new_attacker_pos[2] < 500.0:  # 设定 500 米为“近地警告线”。低于此高度，每掉 0.1 米扣分越狠
+                    reward_A_ground_warning = -(500.0 - new_attacker_pos[2]) * 0.05 * dt
 
-                    # 提取当前 Z 轴速度 (垂直速度)
-                    vz = trusted_states["attacker_0"]["vel"][2]
-                    
-                    # 【核心保命机制】如果处于低空，且还在向下掉高度
-                    if vz < -1.0: 
-                        # 下坠越快，乘法叠加的惩罚越极端 (动态势能墙)
-                        # 例如 vz = -50m/s 时，每秒扣除巨大的分数，逼迫网络产生对“死亡俯冲”的恐惧
-                        reward_A_ground_warning -= abs(vz) * 0.2 * dt
-                
                 reward_A_tracking = 0.0
                 reward_A_ramming = 0.0
 
@@ -744,11 +790,13 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                     # 引入水平冲刺系数 
                     # 避免主机在最后一刻从天顶垂直“砸”向目标。只有当高度差极小时，才给予 100% 的速度冲刺奖励。高度差越大，冲刺奖励的折扣越狠。
                     z_alignment_factor = np.clip((200.0 - abs(dz)) / 200.0, 0.0, 1.0)
-                    closing_speed = np.dot(attacker_vel, los_dir) # 计算速度在视线方向上的投影 (接近率)
+                    # 计算速度在视线方向上的投影 (接近率)
+                    closing_speed = np.dot(attacker_vel, los_dir)
                     if closing_speed > 0:
                         reward_A_ramming = closing_speed * 0.05 * dt * z_alignment_factor
                     else:
                         reward_A_ramming = 0.0
+                    # ========================================================
                 else:
                     # --- 中程追踪阶段 (Mid-course Phase) ---
                     
@@ -761,52 +809,48 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                     # cos_collision 衡量的是“相对速度”是否指向目标，这是直线拦截的核心！
                     cos_collision = np.clip(np.dot(rel_vel_dir, los_dir), -1.0, 1.0)
 
-                    # ==========================================================
-                    # BFM 综合战术几何奖励 (ATA + AA + HCA + Collision)
-                    # ==========================================================
-                    reward_A_tracking = 0.0
-                    
-                    # 1. 相对速度追踪奖励 (降低权重，平滑梯度)
-                    if cos_collision > 0.0:
-                        reward_A_tracking += cos_collision * 8.0 * dt
-                    else:
-                        # 速度背离目标时，轻微惩罚
-                        reward_A_tracking += cos_collision * 5.0 * dt
+                    # 计算 ATA 余弦值的变化率 (Delta)
+                    delta_cos_ata = cos_ata_attacker - getattr(self, 'last_cos_ata_A', cos_ata_attacker)
+                    self.last_cos_ata_A = cos_ata_attacker
 
-                    # 2. ATA 机头指向奖励
-                    if cos_ata_attacker > 0.0:
-                        # 机头在前半球，基础奖励，角度越正分越高
-                        reward_A_tracking += cos_ata_attacker * 15.0 * dt
-                        if cos_ata_attacker > 0.866: # 进入前 30 度 (高阶锁定)
-                            reward_A_tracking += 10.0 * dt
+                    if cos_ata_attacker > 0:
+                        # [前半球]：目标在我的视野前方
+                        if cos_aa_attacker > 0:
+                            # 优势尾随：两者同向且目标在前方，给予高额奖励
+                            advantage_score = (cos_ata_attacker * cos_aa_attacker) ** 2
+                            reward_A_tracking = advantage_score * 0.5 * dt
+                        else:
+                            # 侧向/迎头拦截：不仅要求机头大致对准 (cos_ata)，更要求相对轨迹对准 (cos_collision)
+                            # 降低对机头指向的要求，大幅提高对碰撞航线的奖励，逼迫它打提前量！
+                            reward_A_tracking = (cos_ata_attacker * 0.1 + cos_collision * 0.8) * dt  # 融合提前量奖励
                     else:
-                        # 【重罚背对】机头在后半球，给予严厉的持续惩罚！
-                        # 迫使它产生强烈的“我想转身”的求生欲
-                        reward_A_tracking += cos_ata_attacker * 15.0 * dt
-
-                    # 3. 阵位优势：适度保留
-                    if cos_aa_attacker > 0.5: 
-                        reward_A_tracking += cos_aa_attacker * 2.0 * dt
-                    
-                    # 4. HCA 航向交叉角奖励 - 鼓励同向伴飞，惩罚迎头对冲
-                    if cos_hca > 0.0:
-                        # cos_hca > 0 表示双方夹角小于 90 度 (大致往同一个方向飞)
-                        # 给予小额奖励，鼓励航向对齐 (Trajectory Alignment)
-                        reward_A_tracking += cos_hca * 1.0 * dt
-        
-                    # 横向侧滑惩罚 (Sideslip Penalty)
-                    # 惩罚飞机在进行追踪时出现的多余滚转或侧向速度，逼迫模型采用更有效率的纯垂直/水平机动
-                    # local_vel[1] 是体轴坐标系下的 Y 轴速度 (侧滑速度)
-                    sideslip_vel = abs(trusted_states["attacker_0"]["vel"][1])
-                    reward_A_tracking -= (sideslip_vel / self.MAX_SPEED) * 2.0 * dt
-               
+                        # ================= Phase 2 修复：打破局部最优 =================
+                        # [后半球]：目标跑到背后
+                        # 1. 削弱静态惩罚，让它不至于“痛到不敢动”
+                        static_penalty = cos_ata_attacker * 1.5 * dt  # 从 4.0 降到 1.5
+                        
+                        # 2. 引入强大的“趋势奖励”
+                        # 如果 delta_cos_ata > 0，说明机头正在往目标方向拉回来
+                        trend_reward = 0.0
+                        if delta_cos_ata > 0:
+                            # 权重给高一点，因为单帧的 delta 数值非常小
+                            trend_reward = delta_cos_ata * 20.0 
+                            
+                        # 3. 抵消部分能量惩罚：当处于劣势且努力转弯时，暂时豁免高G惩罚
+                        if n_n > 2.0 and delta_cos_ata > 0:
+                            reward_A_energy_loss *= 0.2  # 打个2折，鼓励大过载掉头
+                            
+                        reward_A_tracking = static_penalty + trend_reward
+                        # ===============================================================
+                
                 # 单帧结算
                 total_rewards["attacker_0"] += (
                     reward_A_progress 
+                    + reward_A_distance_penalty 
                     + reward_A_tracking 
                     + reward_A_time 
                     + reward_A_ramming 
-                    + reward_A_z_advantage     # 更新后的高度优势奖励
+                    + reward_A_z_penalty       # 更新后的高度惩罚
                     + reward_A_ground_warning 
                     + reward_A_energy_loss     # 新增的能量机动惩罚
                 )
@@ -886,9 +930,6 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 total_rewards["evader_0"] += (reward_E_escape + reward_E_survival + reward_E_jinking + reward_E_straight + reward_E_ground_warning)
 
                 '''
-            # 将判定圈扩大为 1200m。只要进入射程，且距离开始拉大 (说明刚刚掠过最近相遇点)，直接结算！
-            WEZ_RADIUS = 1200.0
-            
             # 1. 动能撞击 / 击杀成功
             if new_dist < 50.0 and self.macro_step > 2: # 增加暖机帧保护
                 if not terminations["attacker_0"]: total_rewards["attacker_0"] += 5000.0
@@ -901,13 +942,16 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 infos["attacker_0"]["terminal_target_pos"] = new_evader_state[0:3].copy()
                 infos["attacker_0"]["reason"] = "success"
                 break # 直接结束本轮 AI 决策的 repeat 循环
-            
-            # 2. 扩大化的武器制导圈 (WEZ) 与 脱靶量 (CPA) 结算 (全新逻辑)
-            # 增加限制: cos_ata_attacker > 0.5 (即机头与目标视线夹角必须小于 60 度)，确保是在"追击"而非"路过"
-            elif new_dist < WEZ_RADIUS and raw_micro_delta > 0 and self.macro_step > 2 and cos_ata_attacker > 0.5:
-                miss_distance = new_dist - raw_micro_delta # 倒推回上一微小帧的极小值 (真实脱靶量)
-                score_ratio = 1.0 - ((miss_distance - 50.0) / (WEZ_RADIUS - 50.0))
-                reward_terminal = 5000.0 * (np.clip(score_ratio, 0.0, 1.0) ** 2)
+
+            # 2. 擦肩而过，触发近炸引信
+            # new_dist 是物理步进后的距离，dist 是步进前的距离。
+            # 如果进入杀伤圈，且距离开始拉大，说明刚刚掠过极小值点
+            elif new_dist < self.cpa_radius and raw_micro_delta > 0:
+                miss_distance = new_dist - raw_micro_delta # 取上一微小帧的极小值
+                
+                # 根据脱靶量计算梯度得分：基础分1000 + 4000 * (1 - (脱靶量 - 50.0) / 杀伤区间)
+                score_ratio = 1.0 - ((miss_distance - 50.0) / (self.cpa_radius - 50.0))
+                reward_terminal = 1000.0 + 4000.0 * np.clip(score_ratio, 0.0, 1.0)
                 
                 # 双方进行分数结算 (零和博弈)
                 if "attacker_0" in total_rewards and not terminations["attacker_0"]: total_rewards["attacker_0"] += reward_terminal
@@ -927,12 +971,12 @@ class Drone1v1MARLEnv(MultiAgentEnv):
             for agent, state in zip(["attacker_0", "evader_0"], [new_attacker_state, new_evader_state]):
                 if agent in actions and not terminations[agent]: # 只有这个 agent 还在计分板上，才对它进行边界惩罚！
                     if state[2] < 10:
-                        total_rewards[agent] -= 5000.0
+                        total_rewards[agent] -= 1000.0
                         terminations[agent] = True
                         infos[agent]["reason"] = "ground_crash"
                         crash_occurred = True 
                     elif state[2] > 5000.0:
-                        total_rewards[agent] -= 5000.0
+                        total_rewards[agent] -= 1000.0
                         terminations[agent] = True
                         infos[agent]["reason"] = "out_of_bounds" 
                         crash_occurred = True
@@ -942,34 +986,6 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 break
 
         # --- 退出 Frame Skip 循环，结算当前决策步的最终结果 ---
-
-        # 【新增：宏观战术趋势奖励结算】
-        if "attacker_0" in total_rewards and not terminations.get("attacker_0", False):
-            # 1. 获取 0.2 秒动作执行完毕后的最终状态
-            final_A_state = self.pyb_env._getDroneStateVector(attacker_id)
-            final_E_state = self.pyb_env._getDroneStateVector(evader_id)
-            
-            final_pos_A = final_A_state[0:3]
-            final_pos_E = final_E_state[0:3]
-            final_quat_A = final_A_state[3:7]
-            
-            # 2. 计算最终的视线向量和机头指向
-            macro_los_dir = (final_pos_E - final_pos_A) / (np.linalg.norm(final_pos_E - final_pos_A) + 1e-6)
-            rot_mat_final_A = p.getMatrixFromQuaternion(final_quat_A)
-            final_forward_A = np.array([rot_mat_final_A[0], rot_mat_final_A[3], rot_mat_final_A[6]])
-            
-            # 3. 算出这个宏观步最终的 ATA 余弦值
-            final_cos_ata = np.clip(np.dot(final_forward_A, macro_los_dir), -1.0, 1.0)
-            
-            # 4. 计算 0.2 秒内的净变化量 (Delta)
-            macro_delta_cos = final_cos_ata - getattr(self, 'last_cos_ata_A', final_cos_ata)
-            
-            # 5. 给予宏观趋势奖励并更新缓存
-            if macro_delta_cos > 0:
-                # 既然是 0.2 秒的积累量，这里的权重可以适当给大一点
-                total_rewards["attacker_0"] += macro_delta_cos * 50.0 
-                
-            self.last_cos_ata_A = final_cos_ata
         
         # 判断是否超时 (Truncation)
         if (self.step_counter / self.CTRL_FREQ) > self.EPISODE_LEN_SEC:
@@ -978,28 +994,20 @@ class Drone1v1MARLEnv(MultiAgentEnv):
 
             # 如果演习结束，且攻击机既没有坠毁也没有击杀（即苟活到了最后），给予巨额惩罚
             if not terminations.get("attacker_0", True) and "attacker_0" in total_rewards:
-                total_rewards["attacker_0"] -= 2500.0  # 减轻超时惩罚，鼓励先生存再输出
+                total_rewards["attacker_0"] -= 3000.0
                 
             # 对应的，目标机成功拖延时间活到了最后，任务圆满完成，给予巨额奖励
             if not terminations.get("evader_0", True) and "evader_0" in total_rewards:
                 total_rewards["evader_0"] += 3000.0
         
-        global_state_array = self._compute_global_state()
-        observations = {} # 计算最新的观测值
-        for agent in self.agents: # 注意：此时 self.agents 已经清理过了死掉的飞机
-            observations[agent] = {
-                "obs": self._compute_obs(agent),
-                "global_state": global_state_array
-            }
-        
-        # 对于刚刚在这一帧死亡的飞机，依然需要给它发送最后一次信息（包含死亡判定）
-        for agent in self.possible_agents:
-            if terminations[agent] or truncations[agent]:
-                if agent not in observations:
-                    observations[agent] = {
-                        "obs": np.zeros(19, dtype=np.float32),
-                        "global_state": global_state_array # 死亡瞬间依然让 Critic 看到全局
-                    }
+        # 计算最新的观测值
+        observations = {}
+        for agent in self.agents:
+            if not terminations[agent]:
+                observations[agent] = self._compute_obs(agent)
+            else:
+                # 如果飞机死了，按 PettingZoo 规矩传零向量
+                observations[agent] = np.zeros(19, dtype=np.float32)
 
         # 必须清理掉本回合死亡的智能体
         self.agents = [
@@ -1015,149 +1023,6 @@ class Drone1v1MARLEnv(MultiAgentEnv):
         if terminations["__all__"] or truncations["__all__"]:
             if getattr(self, 'record_tacview', False):
                 self.tacview_logger.close()
-
-        # 记录 Tacview 帧 
-        if getattr(self, 'record_tacview', False):
-            current_time = self.step_counter / self.CTRL_FREQ
-            self._record_tacview_frame(time_sec=current_time)
-
-        # 1:1 真实物理平滑渲染与电影级运镜
-        if self.pyb_env.GUI:
-            import time
-            time.sleep(1 / self.CTRL_FREQ)  # 强制同步现实时间
-            
-            # 实时更新新坐标
-            cur_attacker_pos = self.pyb_env._getDroneStateVector(attacker_id)[0:3]
-            cur_evader_pos = self.pyb_env._getDroneStateVector(evader_id)[0:3]
-            
-            # 更新目标机身上的“幽灵引信球”位置
-            if self.fuze_obj_id != -1:
-                p.resetBasePositionAndOrientation(self.fuze_obj_id, cur_evader_pos, [0, 0, 0, 1], physicsClientId=self.pyb_env.CLIENT)
-
-            # ================= 更新雷达标记点 =================
-            if hasattr(self, 'radar_marker_A'):
-                p.resetBasePositionAndOrientation(self.radar_marker_A, cur_attacker_pos, [0, 0, 0, 1], physicsClientId=self.pyb_env.CLIENT)
-            if hasattr(self, 'radar_marker_E'):
-                p.resetBasePositionAndOrientation(self.radar_marker_E, cur_evader_pos, [0, 0, 0, 1], physicsClientId=self.pyb_env.CLIENT)
-            # =================================================
-            
-            # 键盘运镜切换监听
-            keys = p.getKeyboardEvents(physicsClientId=self.pyb_env.CLIENT)
-            if ord('1') in keys and keys[ord('1')] & p.KEY_WAS_TRIGGERED: self.camera_mode = 1
-            if ord('2') in keys and keys[ord('2')] & p.KEY_WAS_TRIGGERED: self.camera_mode = 2
-            if ord('3') in keys and keys[ord('3')] & p.KEY_WAS_TRIGGERED: self.camera_mode = 3
-            if ord('4') in keys and keys[ord('4')] & p.KEY_WAS_TRIGGERED: self.camera_mode = 4
-            if ord('5') in keys and keys[ord('5')] & p.KEY_WAS_TRIGGERED: self.camera_mode = 5
-
-            # 平滑画出红色(主机)与黄色(目标机)的 3D 轨迹尾迹
-            p.addUserDebugLine(self.last_draw_pos, cur_attacker_pos, [1, 0, 0], 2.5, 3.0, physicsClientId=self.pyb_env.CLIENT)
-            p.addUserDebugLine(self.last_target_draw_pos, cur_evader_pos, [1, 1, 0], 2.5, 3.0, physicsClientId=self.pyb_env.CLIENT)
-            self.last_draw_pos = cur_attacker_pos.copy()
-            self.last_target_draw_pos = cur_evader_pos.copy()
-
-            # ================= HUD 文字与战术几何计算 =================
-            # 1. 获取双方实时状态
-            state_A = self.pyb_env._getDroneStateVector(attacker_id)
-            state_E = self.pyb_env._getDroneStateVector(evader_id)
-            
-            pos_A, vel_A = state_A[0:3], state_A[10:13]
-            pos_E, vel_E = state_E[0:3], state_E[10:13]
-            
-            alt_A, speed_A = pos_A[2], np.linalg.norm(vel_A)
-            alt_E, speed_E = pos_E[2], np.linalg.norm(vel_E)
-
-            # 2. 计算真实的战术夹角
-            los_vec = pos_E - pos_A
-            dist_cam = np.linalg.norm(los_vec)
-            los_dir = los_vec / (dist_cam + 1e-6)
-            
-            # 提取主机真实机头指向 (通过四元数转旋转矩阵的第一列)
-            rot_mat_A = p.getMatrixFromQuaternion(state_A[3:7])
-            forward_A = np.array([rot_mat_A[0], rot_mat_A[3], rot_mat_A[6]])
-            
-            # 真实 ATA (天线偏角): 机头指向与视线的夹角
-            ata_deg = np.degrees(np.arccos(np.clip(np.dot(forward_A, los_dir), -1.0, 1.0)))
-            
-            # 碰撞角偏差 (Collision Error): 相对速度与视线的夹角
-            rel_vel = vel_A - vel_E
-            rel_vel_dir = rel_vel / (np.linalg.norm(rel_vel) + 1e-6)
-            collision_err_deg = np.degrees(np.arccos(np.clip(np.dot(rel_vel_dir, los_dir), -1.0, 1.0)))
-
-            # 提取目标机滚转角 (观察 2G 盘旋是否保持在完美的 60 度)
-            roll_E_deg = np.degrees(state_E[7])
-
-            # 3. 极简单行字符串设计 (杜绝任何多行重叠隐患)
-            # 主机：距离、ATA、碰撞偏差角
-            hud_A_text = f"[A] Dist:{dist_cam:.0f}m | Spd:{speed_A:.0f}m/s | ATA:{ata_deg:.1f}* | Coll:{collision_err_deg:.1f}*"
-            # 目标机：空速、滚转角 (用来监控盘旋靶是否正常飞)
-            hud_E_text = f"[E] Spd:{speed_E:.0f}m/s | Roll:{roll_E_deg:.0f}*"
-
-            # 4. 绑定与绘制
-            drone_id_A = self.pyb_env.DRONE_IDS[0] if hasattr(self.pyb_env, 'DRONE_IDS') else self.pyb_env.drone_ids[0]
-            drone_id_E = self.pyb_env.DRONE_IDS[1] if hasattr(self.pyb_env, 'DRONE_IDS') else self.pyb_env.drone_ids[1]
-
-            # 初始化 ID 占位符
-            if not hasattr(self, 'hud_A_id'): self.hud_A_id = -1
-            if not hasattr(self, 'hud_E_id'): self.hud_E_id = -1
-
-            # 将文字挂在飞机正上方 2.5 米处
-            if self.hud_A_id == -1:
-                self.hud_A_id = p.addUserDebugText(hud_A_text, [0, 0, 2.5], textColorRGB=[0.1, 0.4, 1.0], textSize=1.2, parentObjectUniqueId=drone_id_A, physicsClientId=self.pyb_env.CLIENT)
-            else:
-                self.hud_A_id = p.addUserDebugText(hud_A_text, [0, 0, 2.5], textColorRGB=[0.1, 0.4, 1.0], textSize=1.2, parentObjectUniqueId=drone_id_A, replaceItemUniqueId=self.hud_A_id, physicsClientId=self.pyb_env.CLIENT)
-            
-            if self.hud_E_id == -1:
-                self.hud_E_id = p.addUserDebugText(hud_E_text, [0, 0, 2.5], textColorRGB=[1.0, 0.2, 0.2], textSize=1.2, parentObjectUniqueId=drone_id_E, physicsClientId=self.pyb_env.CLIENT)
-            else:
-                self.hud_E_id = p.addUserDebugText(hud_E_text, [0, 0, 2.5], textColorRGB=[1.0, 0.2, 0.2], textSize=1.2, parentObjectUniqueId=drone_id_E, replaceItemUniqueId=self.hud_E_id, physicsClientId=self.pyb_env.CLIENT)
-            
-            # 视线连线
-            p.addUserDebugLine(cur_attacker_pos, cur_evader_pos, [0, 1, 1], 1.5, 1.5 / self.CTRL_FREQ, physicsClientId=self.pyb_env.CLIENT)
-            
-            # 绘制动态高度投影线 (直达海平面 Z=0)
-            # 无论镜头拉多远，都能通过这根“柱子”看清飞机在全局的位置
-            p.addUserDebugLine(cur_attacker_pos, [cur_attacker_pos[0], cur_attacker_pos[1], 0.0], [0.1, 0.4, 1.0], 1.5, 1.5 / self.CTRL_FREQ, physicsClientId=self.pyb_env.CLIENT)
-            p.addUserDebugLine(cur_evader_pos, [cur_evader_pos[0], cur_evader_pos[1], 0.0], [1.0, 0.2, 0.2], 1.5, 1.5 / self.CTRL_FREQ, physicsClientId=self.pyb_env.CLIENT)
-
-            # 计算两架飞机的空间中点 (Midpoint)
-            mid_pos = (cur_attacker_pos + cur_evader_pos) / 2.0
-
-            # 提取双方真实姿态用于镜头对齐
-            attacker_rpy = self.pyb_env._getDroneStateVector(attacker_id)[7:10]
-            evader_rpy = self.pyb_env._getDroneStateVector(evader_id)[7:10]
-            smooth_yaw_A = np.degrees(attacker_rpy[2]) 
-            smooth_yaw_E = np.degrees(evader_rpy[2]) 
-
-            # 相机平滑跟随缓动
-            self.cam_pos = self.cam_pos * 0.9 + cur_attacker_pos * 0.1
-
-            if self.camera_mode == 1:
-                # Mode 1: 经典第三人称尾随视角
-                p.resetDebugVisualizerCamera(100.0, smooth_yaw_A - 90, -10, self.cam_pos, physicsClientId=self.pyb_env.CLIENT)
-            
-            elif self.camera_mode == 2:
-                # Mode 2: 战术俯视地图 (Top-down Tactical Map)
-                # 距离动态适应，但增加下限防止过近，上限限制在 8000 保证可视度
-                tactical_dist = np.clip(dist_cam * 1.5, 4000.0, 8000.0) 
-                p.resetDebugVisualizerCamera(tactical_dist, 0, -89.9, mid_pos, physicsClientId=self.pyb_env.CLIENT)
-            
-            elif self.camera_mode == 3:
-                # Mode 3: 动态狗斗视角 (Over-the-shoulder)
-                view_yaw = np.degrees(np.arctan2(cur_evader_pos[1] - cur_attacker_pos[1], cur_evader_pos[0] - cur_attacker_pos[0]))
-                dynamic_dist = np.clip(dist_cam * 1.2, 150.0, 4000.0) 
-                p.resetDebugVisualizerCamera(dynamic_dist, view_yaw - 90, -15, mid_pos, physicsClientId=self.pyb_env.CLIENT)
-            
-            elif self.camera_mode == 4:
-                # Mode 4: 目标锁定抵近视角 (Target Tracking)
-                # 修复：提取目标机的 Yaw 角进行追踪
-                p.resetDebugVisualizerCamera(200.0, smooth_yaw_E - 90, -20, cur_evader_pos, physicsClientId=self.pyb_env.CLIENT)
-            
-            elif self.camera_mode == 5:
-                # Mode 5: 全局大尺度远景 (God's Eye)
-                # 将锚点从静态原点改为两机中点，确保交战空域永远在画面正中心
-                # 借助新增的垂直投影线，即使飞机变成小点也能清晰辨别
-                god_view_dist = np.clip(dist_cam * 2.5, 6000.0, 10000.0)
-                p.resetDebugVisualizerCamera(god_view_dist, 45, -30, mid_pos, physicsClientId=self.pyb_env.CLIENT)
 
         return observations, total_rewards, terminations, truncations, infos
     
