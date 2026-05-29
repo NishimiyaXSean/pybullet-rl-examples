@@ -112,9 +112,10 @@ if __name__ == "__main__":
             # 格式: [初始总步数, 初始熵系数, 结束总步数, 结束熵系数]
             # 假设环境经过 200 万步时进入 Stage 2, 熵系数从 0.01 逐渐强制降到 0.0001，逼迫它收敛。
             entropy_coeff_schedule=[
-                [0, 0.01],         # 第 0 步开始，设定初始熵系数
-                [1000000, 0.01],   # 前 100 万步保持 0.01，给模型充足的时间去探索“全向近距格斗”的物理边界
-                [8000000, 0.0001]  # 随后平滑衰减，在 800 万步（即训练尾声）时降至 0.0001，强制逼迫动作收敛
+                [0, 0.02],         # 初始稍微提高一点点，给予破坏旧策略的动力
+                [500000, 0.01],    # 前 50 万步开始降温
+                [4000000, 0.001],  # 400万步时降到 0.001，逼迫战术成型
+                [8000000, 0.0001]
             ],
             clip_param=0.2, # 限制价值函数的截断
             vf_clip_param=50.0,
@@ -138,9 +139,9 @@ if __name__ == "__main__":
     print(f"tensorboard --logdir=\"{PROJECT_ROOT}\"")
     print("="*45 + "\n")
 
-    '''
+    
     # 加载旧模型以继续训练
-    OLD_CHECKPOINT = os.path.abspath("./marl_runs/mappo_run_0527_1047/checkpoints/checkpoint_best_iter_010" )
+    OLD_CHECKPOINT = os.path.abspath("./marl_runs/mappo_run_0528_2109/checkpoints/checkpoint_best_iter_254" )
 
     if os.path.exists(OLD_CHECKPOINT):
         print(f"正在恢复旧模型记忆: {OLD_CHECKPOINT}")
@@ -148,7 +149,6 @@ if __name__ == "__main__":
     else:
         print("未发现旧模型，将从随机初始化开始全新训练。")
 
-    '''
 
     tb_writer = SummaryWriter(log_dir=PROJECT_ROOT)
 

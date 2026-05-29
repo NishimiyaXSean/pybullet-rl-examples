@@ -695,17 +695,17 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 dz = new_attacker_pos[2] - new_evader_pos[2]
 
                 # 1. 靠近奖励 (全局生效：缩短距离加分，被拉开扣分)
-                reward_A_progress = -micro_delta_dist * 2.0 
-                reward_A_progress = np.clip(reward_A_progress, -10.0, 10.0)
+                reward_A_progress = -micro_delta_dist * 0.05
+                reward_A_progress = np.clip(reward_A_progress, -2.0, 2.0)
 
                 # 2. 时间惩罚 (全局生效：逼迫速战速决)
                 reward_A_time = -1.0 * dt
 
                 reward_A_z_advantage = 0.0
-                if dz > 0:
-                    # 主机在上方：给予持续的正向能量奖励 (势能储备)
-                    reward_A_z_advantage = dz * 0.001 * dt
-                # 【删除 dz < 0 时的惩罚】不要让它对低位产生恐惧，以免引发“垂直逃逸”
+                # 【核心修改】：只有当机头大致朝向敌方 (进攻态势) 时，高度优势才给分！
+                if dz > 0 and cos_ata_attacker > -0.2:
+                    # 限制最大势能差额为 1000 米，防止无限爬升
+                    reward_A_z_advantage = np.clip(dz, 0.0, 1000.0) * 0.002 * dt
                 
                 reward_A_energy_loss = 0.0 
 
@@ -766,39 +766,33 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                     # ==========================================================
                     reward_A_tracking = 0.0
                     
-                    # ==========================================================
-                    # 1. 废除极窄高斯尖峰，启用广域多项式梯度引导 (The Core Driver)
-                    # ==========================================================
+                    # 1. 相对速度追踪奖励 (降低权重，平滑梯度)
                     if cos_collision > 0.0:
-                        # 只要相对速度大致朝向目标，就给奖励。
-                        # 使用 3 次方：对准度一般时奖励低，越精准奖励呈指数级飙升，最高 +15.0
-                        reward_A_tracking += (cos_collision ** 3) * 15.0 * dt
+                        reward_A_tracking += cos_collision * 8.0 * dt
                     else:
-                        # 相对速度背离目标时，给予中等惩罚，逼迫它赶紧转弯改出
-                        reward_A_tracking -= 2.0 * dt
+                        # 速度背离目标时，轻微惩罚
+                        reward_A_tracking += cos_collision * 5.0 * dt
 
-                    # ==========================================================
-                    # 2. 弱化 ATA 惩罚，鼓励转身
-                    # ==========================================================
-                    # 只要机头在前半球，给予一点基础分
+                    # 2. ATA 机头指向奖励
                     if cos_ata_attacker > 0.0:
-                        reward_A_tracking += cos_ata_attacker * 2.0 * dt
-                    # 【核心修改】取消对负 ATA (背对目标) 的惩罚！
-                    # 让它在 Overshoot 之后，敢于在不扣分的环境下从容转弯
+                        # 机头在前半球，基础奖励，角度越正分越高
+                        reward_A_tracking += cos_ata_attacker * 15.0 * dt
+                        if cos_ata_attacker > 0.866: # 进入前 30 度 (高阶锁定)
+                            reward_A_tracking += 10.0 * dt
+                    else:
+                        # 【重罚背对】机头在后半球，给予严厉的持续惩罚！
+                        # 迫使它产生强烈的“我想转身”的求生欲
+                        reward_A_tracking += cos_ata_attacker * 15.0 * dt
 
                     # 3. 阵位优势：适度保留
                     if cos_aa_attacker > 0.5: 
-                        reward_A_tracking += cos_aa_attacker * 1.5 * dt
+                        reward_A_tracking += cos_aa_attacker * 2.0 * dt
                     
                     # 4. HCA 航向交叉角奖励 - 鼓励同向伴飞，惩罚迎头对冲
                     if cos_hca > 0.0:
                         # cos_hca > 0 表示双方夹角小于 90 度 (大致往同一个方向飞)
                         # 给予小额奖励，鼓励航向对齐 (Trajectory Alignment)
                         reward_A_tracking += cos_hca * 1.0 * dt
-                    elif cos_hca < -0.5:
-                        # cos_hca < -0.5 表示双方夹角大于 120 度 (正在迎头对冲)
-                        # 给予惩罚，警告它：“别像个莽夫一样迎头撞，滚去切敌机的尾部半径！”
-                        reward_A_tracking -= 1.0 * dt
         
                     # 横向侧滑惩罚 (Sideslip Penalty)
                     # 惩罚飞机在进行追踪时出现的多余滚转或侧向速度，逼迫模型采用更有效率的纯垂直/水平机动
@@ -972,8 +966,8 @@ class Drone1v1MARLEnv(MultiAgentEnv):
             
             # 5. 给予宏观趋势奖励并更新缓存
             if macro_delta_cos > 0:
-                # 既然是 0.2 秒的积累量，这里的权重可以适当给大一点 (比如 20.0)
-                total_rewards["attacker_0"] += macro_delta_cos * 20.0 
+                # 既然是 0.2 秒的积累量，这里的权重可以适当给大一点
+                total_rewards["attacker_0"] += macro_delta_cos * 50.0 
                 
             self.last_cos_ata_A = final_cos_ata
         
@@ -984,7 +978,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
 
             # 如果演习结束，且攻击机既没有坠毁也没有击杀（即苟活到了最后），给予巨额惩罚
             if not terminations.get("attacker_0", True) and "attacker_0" in total_rewards:
-                total_rewards["attacker_0"] -= 500.0  # 减轻超时惩罚，鼓励先生存再输出
+                total_rewards["attacker_0"] -= 2500.0  # 减轻超时惩罚，鼓励先生存再输出
                 
             # 对应的，目标机成功拖延时间活到了最后，任务圆满完成，给予巨额奖励
             if not terminations.get("evader_0", True) and "evader_0" in total_rewards:
