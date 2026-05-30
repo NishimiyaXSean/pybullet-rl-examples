@@ -139,7 +139,7 @@ if __name__ == "__main__":
     print(f"tensorboard --logdir=\"{PROJECT_ROOT}\"")
     print("="*45 + "\n")
 
-    
+    '''
     # 加载旧模型以继续训练
     OLD_CHECKPOINT = os.path.abspath("./marl_runs/mappo_run_0528_2109/checkpoints/checkpoint_best_iter_254" )
 
@@ -149,6 +149,7 @@ if __name__ == "__main__":
     else:
         print("未发现旧模型，将从随机初始化开始全新训练。")
 
+    '''
 
     tb_writer = SummaryWriter(log_dir=PROJECT_ROOT)
 

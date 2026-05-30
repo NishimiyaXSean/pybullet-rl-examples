@@ -105,11 +105,11 @@ class Drone1v1MARLEnv(MultiAgentEnv):
         """定义每个难度阶段的具体出生范围"""
         if self.curriculum_stage == 1:
             # Stage 1: 近距超视距 (新手村)
-            self.d_min, self.d_max = 500.0, 800.0
+            self.d_min, self.d_max = 600.0, 1000.0
             self.z_min, self.z_max = 1500.0, 2000.0
         elif self.curriculum_stage == 2:
             # Stage 2: 中距拉锯
-            self.d_min, self.d_max = 800.0, 1500.0
+            self.d_min, self.d_max = 1000.0, 1500.0
             self.z_min, self.z_max = 1800.0, 2500.0
         else:
             # Stage 3: 长程高空对决 (毕业期)
@@ -886,8 +886,8 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 total_rewards["evader_0"] += (reward_E_escape + reward_E_survival + reward_E_jinking + reward_E_straight + reward_E_ground_warning)
 
                 '''
-            # 将判定圈扩大为 1200m。只要进入射程，且距离开始拉大 (说明刚刚掠过最近相遇点)，直接结算！
-            WEZ_RADIUS = 1200.0
+            # 只要进入射程，且距离开始拉大 (说明刚刚掠过最近相遇点)，直接结算！
+            WEZ_RADIUS = 600.0
             
             # 1. 动能撞击 / 击杀成功
             if new_dist < 50.0 and self.macro_step > 2: # 增加暖机帧保护
@@ -902,11 +902,14 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 infos["attacker_0"]["reason"] = "success"
                 break # 直接结束本轮 AI 决策的 repeat 循环
             
-            # 2. 扩大化的武器制导圈 (WEZ) 与 脱靶量 (CPA) 结算 (全新逻辑)
-            # 增加限制: cos_ata_attacker > 0.5 (即机头与目标视线夹角必须小于 60 度)，确保是在"追击"而非"路过"
-            elif new_dist < WEZ_RADIUS and raw_micro_delta > 0 and self.macro_step > 2 and cos_ata_attacker > 0.5:
-                miss_distance = new_dist - raw_micro_delta # 倒推回上一微小帧的极小值 (真实脱靶量)
+            # 2. 严苛的脱靶量 (CPA) 结算
+            # 【核心修改】将 cos_ata_attacker > 0.5 (60度) 提高到 > 0.866 (30度)！
+            # 只有机头真正在瞄准敌机时，掠过才算作有效的武器发射
+            elif new_dist < WEZ_RADIUS and raw_micro_delta > 0 and self.macro_step > 2 and cos_ata_attacker > 0.866:
+                miss_distance = new_dist - raw_micro_delta 
                 score_ratio = 1.0 - ((miss_distance - 50.0) / (WEZ_RADIUS - 50.0))
+                
+                # 提高结算奖励的门槛，如果擦边过(比如距离390m)，只能拿到微弱的分数
                 reward_terminal = 5000.0 * (np.clip(score_ratio, 0.0, 1.0) ** 2)
                 
                 # 双方进行分数结算 (零和博弈)
@@ -978,7 +981,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
 
             # 如果演习结束，且攻击机既没有坠毁也没有击杀（即苟活到了最后），给予巨额惩罚
             if not terminations.get("attacker_0", True) and "attacker_0" in total_rewards:
-                total_rewards["attacker_0"] -= 2500.0  # 减轻超时惩罚，鼓励先生存再输出
+                total_rewards["attacker_0"] -= 1000.0  # 减轻超时惩罚，鼓励先生存再输出
                 
             # 对应的，目标机成功拖延时间活到了最后，任务圆满完成，给予巨额奖励
             if not terminations.get("evader_0", True) and "evader_0" in total_rewards:
