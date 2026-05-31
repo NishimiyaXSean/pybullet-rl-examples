@@ -694,9 +694,12 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 # 计算双方的高度差 (Z轴距离)
                 dz = new_attacker_pos[2] - new_evader_pos[2]
 
-                # 1. 靠近奖励 (全局生效：缩短距离加分，被拉开扣分)
-                reward_A_progress = -micro_delta_dist * 0.05
-                reward_A_progress = np.clip(reward_A_progress, -2.0, 2.0)
+                # 1. 靠近奖励 (【改为单向奖励】：只奖励靠近，不惩罚远离)
+                # 消除 AI 对“转身拉开距离”的极度恐惧
+                if micro_delta_dist < 0:
+                    reward_A_progress = abs(micro_delta_dist) * 0.1 # 靠近给分
+                else:
+                    reward_A_progress = 0.0 # 远离不扣分！全靠超时来兜底
 
                 # 2. 时间惩罚 (全局生效：逼迫速战速决)
                 reward_A_time = -1.0 * dt
@@ -709,7 +712,10 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 
                 reward_A_energy_loss = 0.0 
 
-                # reward_A_energy_loss = -((n_n - 1.0) ** 2) * 0.08 * dt  # 新增能量管理惩罚
+                # 【新增防悬停机制】：如果速度跌到谷底（接近失速），严厉惩罚！
+                current_v = np.linalg.norm(trusted_states["attacker_0"]["vel"])
+                if current_v <= self.STALL_SPEED + 10.0:
+                    reward_A_energy_loss -= 10.0 * dt  # 持续扣分逼迫它推杆加速
 
                 # 攻击机软地板警告 
                 reward_A_ground_warning = 0.0
@@ -776,13 +782,13 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                     # 2. ATA 机头指向奖励
                     if cos_ata_attacker > 0.0:
                         # 机头在前半球，基础奖励，角度越正分越高
-                        reward_A_tracking += cos_ata_attacker * 15.0 * dt
+                        reward_A_tracking += cos_ata_attacker * 20.0 * dt
                         if cos_ata_attacker > 0.866: # 进入前 30 度 (高阶锁定)
-                            reward_A_tracking += 10.0 * dt
+                            reward_A_tracking += 15.0 * dt
                     else:
                         # 【重罚背对】机头在后半球，给予严厉的持续惩罚！
                         # 迫使它产生强烈的“我想转身”的求生欲
-                        reward_A_tracking += cos_ata_attacker * 15.0 * dt
+                        reward_A_tracking += cos_ata_attacker * 5.0 * dt
 
                     # 3. 阵位优势：适度保留
                     if cos_aa_attacker > 0.5: 
@@ -934,7 +940,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                         terminations[agent] = True
                         infos[agent]["reason"] = "ground_crash"
                         crash_occurred = True 
-                    elif state[2] > 5000.0:
+                    elif state[2] > 4900.0:
                         total_rewards[agent] -= 5000.0
                         terminations[agent] = True
                         infos[agent]["reason"] = "out_of_bounds" 
