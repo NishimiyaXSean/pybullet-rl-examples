@@ -53,7 +53,11 @@ class DroneMetricsCallback(DefaultCallbacks):
 
 if __name__ == "__main__":
     # 1. 初始化 Ray 引擎
-    ray.init()
+    ray.init(
+        _system_config={
+            "object_timeout_milliseconds": 10000, # 延长对象超时容忍
+        }
+    )
 
     # 2. 注册环境名称
     env_name = "drone_1v1_mappo_env"

@@ -598,9 +598,22 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 ])
                 
                 new_pos = pos + new_vel * dt
-                
-                # 计算新姿态四元数 (根据速度方向和滚转角对齐机头)
-                new_quat = p.getQuaternionFromEuler([mu, new_gamma, new_chi])
+
+                # 【关键修复】：必须在调用底层 API 之前拦截所有 NaN 和 Inf！
+                # 检查速度、位置，以及即将用于计算四元数的角度是否正常
+                if (not np.all(np.isfinite(new_pos)) or 
+                    not np.all(np.isfinite(new_vel)) or 
+                    not np.isfinite(mu) or 
+                    not np.isfinite(new_gamma) or 
+                    not np.isfinite(new_chi)):
+                    
+                    # 如果发生数值爆炸，强制判定为坠毁安全状态，截断崩溃传播
+                    new_pos = np.array([pos[0], pos[1], 0.0]) # 强制拍在海平面
+                    new_vel = np.zeros(3)
+                    new_quat = p.getQuaternionFromEuler([0, 0, 0])
+                else:
+                    # 只有在所有浮点数都健康的情况下，才允许计算四元数
+                    new_quat = p.getQuaternionFromEuler([mu, new_gamma, new_chi])
 
                 # 高度限制与天花板惩罚 
                 if agent == "attacker_0":
