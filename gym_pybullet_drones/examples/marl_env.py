@@ -477,6 +477,8 @@ class Drone1v1MARLEnv(MultiAgentEnv):
 
         attacker_state_init = self.pyb_env._getDroneStateVector(attacker_id)
         evader_state_init = self.pyb_env._getDroneStateVector(evader_id)
+        attacker_rpy = attacker_state_init[7:10]
+        evader_rpy = evader_state_init[7:10]
 
         dist = np.linalg.norm(attacker_state_init[0:3] - evader_state_init[0:3])
         current_micro_dist = dist
@@ -486,8 +488,16 @@ class Drone1v1MARLEnv(MultiAgentEnv):
         # 绝对信任的本地物理账本
         # 彻底抛弃每帧从 PyBullet 读取速度的逻辑，防止无人机的空气阻力污染数据！
         trusted_states = {
-            "attacker_0": {"pos": attacker_state_init[0:3].copy(), "vel": attacker_state_init[10:13].copy()},
-            "evader_0":   {"pos": evader_state_init[0:3].copy(),   "vel": evader_state_init[10:13].copy()}
+            "attacker_0": {
+                "pos": attacker_state_init[0:3].copy(), 
+                "vel": attacker_state_init[10:13].copy(),
+                "mu": attacker_rpy[0]  # 提取初始滚转角 (Roll)
+            },
+            "evader_0":   {
+                "pos": evader_state_init[0:3].copy(),   
+                "vel": evader_state_init[10:13].copy(),
+                "mu": evader_rpy[0]
+            }
         }
 
         for _ in range(dynamic_frame_skip):           
@@ -500,20 +510,50 @@ class Drone1v1MARLEnv(MultiAgentEnv):
 
                 pyb_id = self.pyb_env.DRONE_IDS[i] if hasattr(self.pyb_env, 'DRONE_IDS') else self.pyb_env.drone_ids[i]
                 
-                # ================= 新增：连续动作解包与线性映射 =================
+                # 连续动作解包与线性映射
                 # 确保获取的是 3 维 NumPy 数组，并且限制在 [-1, 1] 之间以防异常值
                 action_vec = np.clip(actions[agent], -1.0, 1.0)
+
+                # 动态确定当前飞机的结构极限参数
+                current_max_g = self.MAX_G
+                current_min_g = self.MIN_G
+                current_max_speed = self.MAX_SPEED
                 
-                # 1. 切向过载 (n_x): 映射到 [-2.0, 2.0]
+                if agent == "evader_0":
+                    current_max_g = self.MAX_G * self.EVADER_G_COEFF
+                    current_min_g = self.MIN_G * self.EVADER_G_COEFF
+                    current_max_speed = self.MAX_SPEED * self.EVADER_SPEED_COEFF
+
+                # ================= 连续动作解包与物理映射 =================
+                
+                # 1. 切向过载 (n_x)
                 n_x_cmd = action_vec[0] * 2.0
                 
-                # 2. 法向过载 (n_n): 映射到 [MIN_G, MAX_G]
-                # 公式: MIN + (MAX - MIN) * (val + 1) / 2
-                n_n_cmd = self.MIN_G + (self.MAX_G - self.MIN_G) * (action_vec[1] + 1.0) / 2.0
+                # 2. 法向过载 (n_n) - [改进二：分段非线性映射解决零点偏移]
+                # 使得 action=0 精确映射到 1.0G (平飞状态)
+                act_g = action_vec[1]
+                if act_g >= 0.0:
+                    # [0, 1] 映射到 [1.0, current_max_g]
+                    n_n_cmd = 1.0 + act_g * (current_max_g - 1.0)
+                else:
+                    # [-1, 0) 映射到 [current_min_g, 1.0)
+                    n_n_cmd = 1.0 + act_g * (1.0 - current_min_g)
                 
-                # 3. 滚转角 (mu): 映射到 [-180度, 180度] 即 [-pi, pi]
-                mu_cmd = action_vec[2] * np.pi
-                # ================================================================
+                # 3. 滚转角控制 (mu) - [改进一：从绝对角度改为角速度积分]
+                MAX_ROLL_RATE = np.pi  # 设定最大滚转速率约 180度/秒
+                roll_rate_cmd = action_vec[2] * MAX_ROLL_RATE
+                
+                # 读取干净账本状态 
+                pos = trusted_states[agent]["pos"]
+                vel = trusted_states[agent]["vel"]
+                current_mu = trusted_states[agent]["mu"]
+                
+                # 积分计算下一帧的滚转角
+                mu_cmd = current_mu + roll_rate_cmd * dt
+                # 将角度严格规范化到 [-pi, pi] 避免数值溢出
+                mu_cmd = (mu_cmd + np.pi) % (2 * np.pi) - np.pi
+                
+                # ==========================================================
 
                 # ================= Phase 2 干预：注入完美的水平盘旋 =================
                 if agent == "evader_0":
@@ -530,17 +570,6 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                         n_n_cmd = 1.0
                         mu_cmd = 0.0
                 # ====================================================================
-                
-                current_max_speed = self.MAX_SPEED
-                current_max_g = self.MAX_G
-
-                if agent == "evader_0":
-                    current_max_speed = self.MAX_SPEED * self.EVADER_SPEED_COEFF
-                    current_max_g = self.MAX_G * self.EVADER_G_COEFF
-
-                # 干净账本读取状态 
-                pos = trusted_states[agent]["pos"]
-                vel = trusted_states[agent]["vel"]
 
                 agent_current_z = pos[2]
 
@@ -555,14 +584,14 @@ class Drone1v1MARLEnv(MultiAgentEnv):
 
                 # 包线限制 
                 # A. 升力限制 (低速时无法拉出大过载，升力与速度的平方成正比)
-                # 抛物线方程：当前可用最大过载 = (当前速度 / 角速度)^2 * 最大结构过载
+                # 物理依据：升力与速度的平方成正比。计算当前速度下能拉出的极限 G 值。
                 available_n_lift = ((V / self.CORNER_SPEED) ** 2) * current_max_g
                 
-                # B. 结构限制 (取升力限制和物理结构强度的较小值)
+                # B. 实际最大可用正负 G 是结构极限与空气动力学极限的交集
                 actual_max_n = min(current_max_g, available_n_lift)
-                actual_min_n = max(self.MIN_G, -available_n_lift)
+                actual_min_n = max(current_min_g, -available_n_lift)
                 
-                # C. 强制裁剪法向过载 (n_n)
+                # C. 将网络输出的 G 值强制压入真实的 V-n 包线内
                 n_n = np.clip(n_n_cmd, actual_min_n, actual_max_n)
                 mu = mu_cmd
 
@@ -631,6 +660,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 # ================= 核心修复：更新本地账本并强制洗白 PyBullet =================
                 trusted_states[agent]["pos"] = new_pos
                 trusted_states[agent]["vel"] = new_vel
+                trusted_states[agent]["mu"] = mu
 
                 # 强行把洗干净的数据覆盖回被空气阻力弄脏的 PyBullet
                 p.resetBasePositionAndOrientation(pyb_id, new_pos, new_quat, physicsClientId=self.pyb_env.CLIENT)
