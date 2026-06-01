@@ -469,8 +469,8 @@ class Drone1v1MARLEnv(MultiAgentEnv):
             # 计算这一帧和上一帧推杆动作的差异大小 (欧氏距离 L2 Norm)
             action_delta = np.linalg.norm(act - last_act)
             
-            # 根据猛推摇杆的剧烈程度给予惩罚 (系数 0.1 比较温和，鼓励丝滑微调)
-            total_rewards[agent] -= 0.1 * action_delta 
+            # 根据猛推摇杆的剧烈程度给予惩罚 (系数 0.01 比较温和，鼓励丝滑微调)
+            total_rewards[agent] -= 0.01 * action_delta 
             
             # 存入本帧动作，必须使用 .copy() 防止内存地址的引用污染
             self.last_actions[agent] = np.array(act).copy()
@@ -586,7 +586,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 # 欧拉积分更新状态
                 new_V = V + V_dot * dt
                 # 新增防超速与防倒车机制
-                new_V = np.clip(new_V, self.STALL_SPEED, current_max_speed)
+                new_V = np.clip(new_V, 20.0, current_max_speed)
                 new_gamma = gamma + gamma_dot * dt
                 new_chi = chi + chi_dot * dt
                 
@@ -694,12 +694,11 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 # 计算双方的高度差 (Z轴距离)
                 dz = new_attacker_pos[2] - new_evader_pos[2]
 
-                # 1. 靠近奖励 (【改为单向奖励】：只奖励靠近，不惩罚远离)
-                # 消除 AI 对“转身拉开距离”的极度恐惧
+                # 1. 靠近奖励 
                 if micro_delta_dist < 0:
                     reward_A_progress = abs(micro_delta_dist) * 0.1 # 靠近给分
                 else:
-                    reward_A_progress = 0.0 # 远离不扣分！全靠超时来兜底
+                    reward_A_progress = -micro_delta_dist * 0.03
 
                 # 2. 时间惩罚 (全局生效：逼迫速战速决)
                 reward_A_time = -1.0 * dt
@@ -714,14 +713,14 @@ class Drone1v1MARLEnv(MultiAgentEnv):
 
                 # 【新增防悬停机制】：如果速度跌到谷底（接近失速），严厉惩罚！
                 current_v = np.linalg.norm(trusted_states["attacker_0"]["vel"])
-                if current_v <= self.STALL_SPEED + 10.0:
-                    reward_A_energy_loss -= 10.0 * dt  # 持续扣分逼迫它推杆加速
+                if current_v < 150.0:
+                    reward_A_energy_loss -= (150.0 - current_v) * 0.5 * dt
 
                 # 攻击机软地板警告 
                 reward_A_ground_warning = 0.0
-                if new_attacker_pos[2] < 1000.0:  
+                if new_attacker_pos[2] < 500.0:  
                     # 高度越低，惩罚呈指数级上升
-                    depth_ratio = (1000.0 - new_attacker_pos[2]) / 1000.0
+                    depth_ratio = (500.0 - new_attacker_pos[2]) / 500.0
                     reward_A_ground_warning = -(depth_ratio ** 2) * 5.0 * dt
 
                     # 提取当前 Z 轴速度 (垂直速度)
