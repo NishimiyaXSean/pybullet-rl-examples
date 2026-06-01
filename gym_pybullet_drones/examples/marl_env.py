@@ -939,8 +939,8 @@ class Drone1v1MARLEnv(MultiAgentEnv):
             
             # 1. 动能撞击 / 击杀成功
             if new_dist < 50.0 and self.macro_step > 2: # 增加暖机帧保护
-                if not terminations["attacker_0"]: total_rewards["attacker_0"] += 5000.0
-                if not terminations["evader_0"]: total_rewards["evader_0"] -= 5000.0
+                if not terminations["attacker_0"]: total_rewards["attacker_0"] += 50.0
+                if not terminations["evader_0"]: total_rewards["evader_0"] -= 50.0
                 terminations["attacker_0"] = True
                 terminations["evader_0"] = True
 
@@ -958,7 +958,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 score_ratio = 1.0 - ((miss_distance - 50.0) / (WEZ_RADIUS - 50.0))
                 
                 # 提高结算奖励的门槛，如果擦边过(比如距离390m)，只能拿到微弱的分数
-                reward_terminal = 5000.0 * (np.clip(score_ratio, 0.0, 1.0) ** 2)
+                reward_terminal = 50.0 * (np.clip(score_ratio, 0.0, 1.0) ** 2)
                 
                 # 双方进行分数结算 (零和博弈)
                 if "attacker_0" in total_rewards and not terminations["attacker_0"]: total_rewards["attacker_0"] += reward_terminal
@@ -978,12 +978,12 @@ class Drone1v1MARLEnv(MultiAgentEnv):
             for agent, state in zip(["attacker_0", "evader_0"], [new_attacker_state, new_evader_state]):
                 if agent in actions and not terminations[agent]: # 只有这个 agent 还在计分板上，才对它进行边界惩罚！
                     if state[2] < 10:
-                        total_rewards[agent] -= 5000.0
+                        total_rewards[agent] -= 20.0
                         terminations[agent] = True
                         infos[agent]["reason"] = "ground_crash"
                         crash_occurred = True 
                     elif state[2] > 4900.0:
-                        total_rewards[agent] -= 5000.0
+                        total_rewards[agent] -= 20.0
                         terminations[agent] = True
                         infos[agent]["reason"] = "out_of_bounds" 
                         crash_occurred = True
@@ -1029,11 +1029,11 @@ class Drone1v1MARLEnv(MultiAgentEnv):
 
             # 如果演习结束，且攻击机既没有坠毁也没有击杀（即苟活到了最后），给予巨额惩罚
             if not terminations.get("attacker_0", True) and "attacker_0" in total_rewards:
-                total_rewards["attacker_0"] -= 1000.0  # 减轻超时惩罚，鼓励先生存再输出
+                total_rewards["attacker_0"] -= 10.0  # 减轻超时惩罚，鼓励先生存再输出
                 
             # 对应的，目标机成功拖延时间活到了最后，任务圆满完成，给予巨额奖励
             if not terminations.get("evader_0", True) and "evader_0" in total_rewards:
-                total_rewards["evader_0"] += 3000.0
+                total_rewards["evader_0"] += 30.0
         
         global_state_array = self._compute_global_state()
         observations = {} # 计算最新的观测值

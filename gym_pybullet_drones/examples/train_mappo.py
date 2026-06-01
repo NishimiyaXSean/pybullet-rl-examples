@@ -109,21 +109,19 @@ if __name__ == "__main__":
         # 5. 神经网络结构 (Net Arch)
         .training(
             model={"custom_model": "mappo_centralized_critic"},
-            train_batch_size=16384,
-            minibatch_size=2048,
-            lr=3e-4,
-            # 【修改】：将固定的 0.01 替换为线性衰减策略
-            # 格式: [初始总步数, 初始熵系数, 结束总步数, 结束熵系数]
-            # 假设环境经过 200 万步时进入 Stage 2, 熵系数从 0.01 逐渐强制降到 0.0001，逼迫它收敛。
-            entropy_coeff_schedule=[
-                [0, 0.02],         # 初始稍微提高一点点，给予破坏旧策略的动力
-                [500000, 0.01],    # 前 50 万步开始降温
-                [4000000, 0.001],  # 400万步时降到 0.001，逼迫战术成型
-                [8000000, 0.0001]
-            ],
-            clip_param=0.2, # 限制价值函数的截断
-            vf_clip_param=50.0,
-            gamma=0.999,         # 折扣因子 (越大越看重长期收益)
+            train_batch_size=8192,
+            minibatch_size=1024,
+            lr=5e-5, 
+
+            # 【关键修改 1】：连续动作空间彻底关闭强制熵增加
+            entropy_coeff=0.0,
+
+            clip_param=0.2, # PPO Actor 截断
+
+            # 【关键修改 2】：大幅放宽 Critic 网络的截断，防止价值网络窒息
+            vf_clip_param=1000.0,
+
+            gamma=0.99,         # 折扣因子 (越大越看重长期收益)
             lambda_=0.95,        # GAE 参数 (默认 0.95)
             kl_coeff=0.2,        # KL 散度惩罚系数 (默认 0.2)
         )
@@ -143,9 +141,8 @@ if __name__ == "__main__":
     print(f"tensorboard --logdir=\"{PROJECT_ROOT}\"")
     print("="*45 + "\n")
 
-    '''
     # 加载旧模型以继续训练
-    OLD_CHECKPOINT = os.path.abspath("./marl_runs/mappo_run_0528_2109/checkpoints/checkpoint_best_iter_254" )
+    OLD_CHECKPOINT = os.path.abspath("./marl_runs/mappo_run_0601_1818/checkpoints/checkpoint_best_iter_112" )
 
     if os.path.exists(OLD_CHECKPOINT):
         print(f"正在恢复旧模型记忆: {OLD_CHECKPOINT}")
@@ -153,7 +150,6 @@ if __name__ == "__main__":
     else:
         print("未发现旧模型，将从随机初始化开始全新训练。")
 
-    '''
 
     tb_writer = SummaryWriter(log_dir=PROJECT_ROOT)
 
