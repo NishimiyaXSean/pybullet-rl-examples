@@ -775,15 +775,52 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                         # 例如 vz = -50m/s 时，每秒扣除巨大的分数，逼迫网络产生对“死亡俯冲”的恐惧
                         reward_A_ground_warning -= abs(vz) * 0.2 * dt
                 
-                reward_A_tracking = 0.0
+                # 计算相对速度矢量，用于指引“直线提前量拦截”
+                vel_A = trusted_states["attacker_0"]["vel"]
+                vel_E = trusted_states["evader_0"]["vel"]
+                rel_vel = vel_A - vel_E
+                rel_vel_dir = rel_vel / (np.linalg.norm(rel_vel) + 1e-6)
+                
+                # cos_collision 衡量的是“相对速度”是否指向目标，这是直线拦截的核心！
+                cos_collision = np.clip(np.dot(rel_vel_dir, los_dir), -1.0, 1.0)
+                
+                # 1. 相对速度追踪奖励 (降低权重，平滑梯度)
+                if cos_collision > 0.0:
+                    reward_A_tracking += cos_collision * 8.0 * dt
+                else:
+                    # 速度背离目标时，轻微惩罚
+                    reward_A_tracking += cos_collision * 5.0 * dt
+
+                # 2. ATA 机头指向奖励
+                if cos_ata_attacker > 0.0:
+                    # 机头在前半球，基础奖励，角度越正分越高
+                    reward_A_tracking += cos_ata_attacker * 20.0 * dt
+                    if cos_ata_attacker > 0.866: # 进入前 30 度 (高阶锁定)
+                        reward_A_tracking += 15.0 * dt
+                else:
+                    # 【重罚背对】机头在后半球，给予严厉的持续惩罚！
+                    # 迫使它产生强烈的“我想转身”的求生欲
+                    reward_A_tracking += cos_ata_attacker * 5.0 * dt
+
+                # 3. 阵位优势：适度保留
+                if cos_aa_attacker > 0.5: 
+                    reward_A_tracking += cos_aa_attacker * 2.0 * dt
+                
+                # 4. HCA 航向交叉角奖励 - 鼓励同向伴飞，惩罚迎头对冲
+                if cos_hca > 0.0:
+                    # cos_hca > 0 表示双方夹角小于 90 度 (大致往同一个方向飞)
+                    # 给予小额奖励，鼓励航向对齐 (Trajectory Alignment)
+                    reward_A_tracking += cos_hca * 1.0 * dt
+    
+                # 横向侧滑惩罚 (Sideslip Penalty)
+                # 惩罚飞机在进行追踪时出现的多余滚转或侧向速度，逼迫模型采用更有效率的纯垂直/水平机动
+                # local_vel[1] 是体轴坐标系下的 Y 轴速度 (侧滑速度)
+                sideslip_vel = abs(trusted_states["attacker_0"]["vel"][1])
+                reward_A_tracking -= (sideslip_vel / self.MAX_SPEED) * 2.0 * dt
+        
                 reward_A_ramming = 0.0
 
-                if new_dist <= TERMINAL_RADIUS:
-                    # --- 末端冲刺阶段 (Terminal Phase) ---
-                    # 1. 取消 ATA 瞄准惩罚，彻底释放机动限制
-                    reward_A_tracking = 0.0 
-                    
-                    # 2. 动能冲刺奖励 (Ramming Bonus)
+                if new_dist <= TERMINAL_RADIUS: # 动能冲刺奖励
                     # 替换绝对速度奖励为接近速度奖励
                     los_vec = new_evader_pos - new_attacker_pos
                     los_dir = los_vec / (np.linalg.norm(los_vec) + 1e-6)
@@ -795,59 +832,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                     closing_speed = np.dot(attacker_vel, los_dir) # 计算速度在视线方向上的投影 (接近率)
                     if closing_speed > 0:
                         reward_A_ramming = closing_speed * 0.05 * dt * z_alignment_factor
-                    else:
-                        reward_A_ramming = 0.0
-                else:
-                    # --- 中程追踪阶段 (Mid-course Phase) ---
-                    
-                    # 计算相对速度矢量，用于指引“直线提前量拦截”
-                    vel_A = trusted_states["attacker_0"]["vel"]
-                    vel_E = trusted_states["evader_0"]["vel"]
-                    rel_vel = vel_A - vel_E
-                    rel_vel_dir = rel_vel / (np.linalg.norm(rel_vel) + 1e-6)
-                    
-                    # cos_collision 衡量的是“相对速度”是否指向目标，这是直线拦截的核心！
-                    cos_collision = np.clip(np.dot(rel_vel_dir, los_dir), -1.0, 1.0)
-
-                    # ==========================================================
-                    # BFM 综合战术几何奖励 (ATA + AA + HCA + Collision)
-                    # ==========================================================
-                    reward_A_tracking = 0.0
-                    
-                    # 1. 相对速度追踪奖励 (降低权重，平滑梯度)
-                    if cos_collision > 0.0:
-                        reward_A_tracking += cos_collision * 8.0 * dt
-                    else:
-                        # 速度背离目标时，轻微惩罚
-                        reward_A_tracking += cos_collision * 5.0 * dt
-
-                    # 2. ATA 机头指向奖励
-                    if cos_ata_attacker > 0.0:
-                        # 机头在前半球，基础奖励，角度越正分越高
-                        reward_A_tracking += cos_ata_attacker * 20.0 * dt
-                        if cos_ata_attacker > 0.866: # 进入前 30 度 (高阶锁定)
-                            reward_A_tracking += 15.0 * dt
-                    else:
-                        # 【重罚背对】机头在后半球，给予严厉的持续惩罚！
-                        # 迫使它产生强烈的“我想转身”的求生欲
-                        reward_A_tracking += cos_ata_attacker * 5.0 * dt
-
-                    # 3. 阵位优势：适度保留
-                    if cos_aa_attacker > 0.5: 
-                        reward_A_tracking += cos_aa_attacker * 2.0 * dt
-                    
-                    # 4. HCA 航向交叉角奖励 - 鼓励同向伴飞，惩罚迎头对冲
-                    if cos_hca > 0.0:
-                        # cos_hca > 0 表示双方夹角小于 90 度 (大致往同一个方向飞)
-                        # 给予小额奖励，鼓励航向对齐 (Trajectory Alignment)
-                        reward_A_tracking += cos_hca * 1.0 * dt
-        
-                    # 横向侧滑惩罚 (Sideslip Penalty)
-                    # 惩罚飞机在进行追踪时出现的多余滚转或侧向速度，逼迫模型采用更有效率的纯垂直/水平机动
-                    # local_vel[1] 是体轴坐标系下的 Y 轴速度 (侧滑速度)
-                    sideslip_vel = abs(trusted_states["attacker_0"]["vel"][1])
-                    reward_A_tracking -= (sideslip_vel / self.MAX_SPEED) * 2.0 * dt
-               
+                              
                 # 单帧结算
                 total_rewards["attacker_0"] += (
                     reward_A_progress 
@@ -934,8 +919,9 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 total_rewards["evader_0"] += (reward_E_escape + reward_E_survival + reward_E_jinking + reward_E_straight + reward_E_ground_warning)
 
                 '''
-            # 只要进入射程，且距离开始拉大 (说明刚刚掠过最近相遇点)，直接结算！
-            WEZ_RADIUS = 600.0
+            
+            # 只要进入射程，且距离开始拉大，直接结算！
+            WEZ_RADIUS = 1000.0
             
             # 1. 动能撞击 / 击杀成功
             if new_dist < 50.0 and self.macro_step > 2: # 增加暖机帧保护
@@ -951,13 +937,13 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 break # 直接结束本轮 AI 决策的 repeat 循环
             
             # 2. 严苛的脱靶量 (CPA) 结算
-            # 【核心修改】将 cos_ata_attacker > 0.5 (60度) 提高到 > 0.866 (30度)！
+            # 将 cos_ata_attacker > 0.5 (60度) 提高到 > 0.866 (30度)！
             # 只有机头真正在瞄准敌机时，掠过才算作有效的武器发射
             elif new_dist < WEZ_RADIUS and raw_micro_delta > 0 and self.macro_step > 2 and cos_ata_attacker > 0.866:
                 miss_distance = new_dist - raw_micro_delta 
                 score_ratio = 1.0 - ((miss_distance - 50.0) / (WEZ_RADIUS - 50.0))
                 
-                # 提高结算奖励的门槛，如果擦边过(比如距离390m)，只能拿到微弱的分数
+                # 提高结算奖励的门槛，如果擦边过，只能拿到微弱的分数
                 reward_terminal = 50.0 * (np.clip(score_ratio, 0.0, 1.0) ** 2)
                 
                 # 双方进行分数结算 (零和博弈)

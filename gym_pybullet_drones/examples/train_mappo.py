@@ -141,8 +141,9 @@ if __name__ == "__main__":
     print(f"tensorboard --logdir=\"{PROJECT_ROOT}\"")
     print("="*45 + "\n")
 
+    
     # 加载旧模型以继续训练
-    OLD_CHECKPOINT = os.path.abspath("./marl_runs/mappo_run_0601_1818/checkpoints/checkpoint_best_iter_112" )
+    OLD_CHECKPOINT = os.path.abspath("./marl_runs/mappo_run_0601_2036/checkpoints/checkpoint_best_iter_419" )
 
     if os.path.exists(OLD_CHECKPOINT):
         print(f"正在恢复旧模型记忆: {OLD_CHECKPOINT}")
