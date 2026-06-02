@@ -56,13 +56,25 @@ class Drone1v1MARLEnv(MultiAgentEnv):
         self.EVADER_SPEED_COEFF = 0.625  # 速度系数 (400 * 0.625 = 250 m/s)
         self.EVADER_G_COEFF = 0.555      # 过载系数 (9.0 * 0.555 ≈ 5.0 G)
 
-        # 动作空间：3维连续变量 [-1.0, 1.0]
-        # Action[0]: 切向加速度 (控制推力/减速板)
-        # Action[1]: 法向过载 (控制俯仰拉杆)
-        # Action[2]: 滚转角 (控制副翼)
+        # 动作空间：离散的 11 种 BFM 动作
         self.action_spaces = {
-            agent: gym.spaces.Box(low=-1.0, high=1.0, shape=(3,), dtype=np.float32)
+            agent: gym.spaces.Discrete(11)
             for agent in self.possible_agents
+        }
+
+        # 植入你的 BFM 映射字典
+        self.bfm_action_mapping = {
+            0:  ( 0,  1,  0.0),            # a1: 匀速直飞
+            1:  ( 2,  1,  0.0),            # a2: 加速直飞
+            2:  (-2,  1,  0.0),            # a3: 减速直飞
+            3:  ( 0,  8,  0.0),            # a4: 跃升
+            4:  ( 0, -8,  0.0),            # a5: 俯冲
+            5:  ( 0,  8,  np.pi / 3.0),    # a6: 左转跃升
+            6:  ( 0, -8, -np.pi / 3.0),    # a7: 右转俯冲
+            7:  ( 0,  8, -np.pi / 3.0),    # a8: 右转跃升
+            8:  ( 0, -8,  np.pi / 3.0),    # a9: 左转俯冲
+            9:  ( 0,  2, -np.pi / 3.0),    # a10: 右转
+            10: ( 0,  2,  np.pi / 3.0)     # a11: 左转
         }
         
         # MAPPO 专属 Dict 观测空间
@@ -124,7 +136,6 @@ class Drone1v1MARLEnv(MultiAgentEnv):
         # 遍历所有可能存在的飞机 (注意使用 self.possible_agents 保证顺序和维度固定)
         for i, agent in enumerate(self.possible_agents):
             if agent in self.agents:
-                # 【核心修复点】
                 # _getDroneStateVector 必须传入内部索引 (0 或是 1)，不能传 PyBullet 实体 ID
                 state_vec = self.pyb_env._getDroneStateVector(i)
                 
@@ -226,9 +237,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
         # 初始化时间步与两架飞机的局部追踪变量
         self.step_counter = 0  # 留着给底层备用
         self.macro_step = 0    # 真正的宏观决策步数
-        # 初始动作占位符必须是 3 维 NumPy 零向量
-        self.last_actions = {agent: np.zeros(3, dtype=np.float32) for agent in self.agents}
-    
+            
         # 计算开局时的初始距离 (用于第一帧的奖励计算基准)
         attacker_pos = self.pyb_env._getDroneStateVector(0)[0:3]
         evader_pos = self.pyb_env._getDroneStateVector(1)[0:3]
@@ -447,8 +456,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
             return {}, {}, {}, {}, {}
 
         # 统一决策频率 (Frame Skip)
-        # 强制规定 AI 每 0.2 秒做一次决策 (在 60Hz 的底层频率下，相当于推进 12 帧)
-        AI_DECISION_DT = 0.2 
+        AI_DECISION_DT = 0.5  # 强制规定 AI 每 0.5 秒做一次决策 (在 60Hz 的底层频率下，相当于推进 30 帧)
         dynamic_frame_skip = int(AI_DECISION_DT * self.CTRL_FREQ)
         dt = 1 / self.CTRL_FREQ
 
@@ -461,7 +469,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
         attacker_id = 0
         evader_id = 1
 
-        # --- [修改后] ---
+        '''
         # 动作平滑度惩罚 (连续动作空间专属)
         for agent, act in actions.items():
             last_act = self.last_actions.get(agent, np.zeros(3, dtype=np.float32))
@@ -474,6 +482,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
             
             # 存入本帧动作，必须使用 .copy() 防止内存地址的引用污染
             self.last_actions[agent] = np.array(act).copy()
+        '''
 
         attacker_state_init = self.pyb_env._getDroneStateVector(attacker_id)
         evader_state_init = self.pyb_env._getDroneStateVector(evader_id)
@@ -486,7 +495,6 @@ class Drone1v1MARLEnv(MultiAgentEnv):
         self.macro_step += 1 # 新增：每次 AI 下达指令，宏观步数推进 1 步
 
         # 绝对信任的本地物理账本
-        # 彻底抛弃每帧从 PyBullet 读取速度的逻辑，防止无人机的空气阻力污染数据！
         trusted_states = {
             "attacker_0": {
                 "pos": attacker_state_init[0:3].copy(), 
@@ -500,6 +508,13 @@ class Drone1v1MARLEnv(MultiAgentEnv):
             }
         }
 
+        # ================= 新增：物理控制量的一阶惯性缓冲池 =================
+        # 用于记录飞机当前真实的过载状态，防止 0.5s 宏观决策造成的瞬间受力突变
+        current_controls = {
+            "attacker_0": {"n_x": 0.0, "n_n": 1.0}, # 初始假定为匀速直飞 (1G)
+            "evader_0":   {"n_x": 0.0, "n_n": 1.0}
+        }
+
         for _ in range(dynamic_frame_skip):           
             self.pyb_env.step(np.zeros((2, 4)))
             self.step_counter += 1
@@ -510,11 +525,12 @@ class Drone1v1MARLEnv(MultiAgentEnv):
 
                 pyb_id = self.pyb_env.DRONE_IDS[i] if hasattr(self.pyb_env, 'DRONE_IDS') else self.pyb_env.drone_ids[i]
                 
-                # 连续动作解包与线性映射
-                # 确保获取的是 3 维 NumPy 数组，并且限制在 [-1, 1] 之间以防异常值
-                action_vec = np.clip(actions[agent], -1.0, 1.0)
+                # 1. 提取当前帧的绝对信任坐标、速度与滚转角
+                pos = trusted_states[agent]["pos"]
+                vel = trusted_states[agent]["vel"]
+                current_mu = trusted_states[agent]["mu"]
 
-                # 动态确定当前飞机的结构极限参数
+                # 2. 动态确定当前飞机的结构极限参数
                 current_max_g = self.MAX_G
                 current_min_g = self.MIN_G
                 current_max_speed = self.MAX_SPEED
@@ -524,34 +540,9 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                     current_min_g = self.MIN_G * self.EVADER_G_COEFF
                     current_max_speed = self.MAX_SPEED * self.EVADER_SPEED_COEFF
 
-                # ================= 连续动作解包与物理映射 =================
-                
-                # 1. 切向过载 (n_x)
-                n_x_cmd = action_vec[0] * 2.0
-                
-                # 2. 法向过载 (n_n) - [改进二：分段非线性映射解决零点偏移]
-                # 使得 action=0 精确映射到 1.0G (平飞状态)
-                act_g = action_vec[1]
-                if act_g >= 0.0:
-                    # [0, 1] 映射到 [1.0, current_max_g]
-                    n_n_cmd = 1.0 + act_g * (current_max_g - 1.0)
-                else:
-                    # [-1, 0) 映射到 [current_min_g, 1.0)
-                    n_n_cmd = 1.0 + act_g * (1.0 - current_min_g)
-                
-                # 3. 滚转角控制 (mu) - [改进一：从绝对角度改为角速度积分]
-                MAX_ROLL_RATE = np.pi  # 设定最大滚转速率约 180度/秒
-                roll_rate_cmd = action_vec[2] * MAX_ROLL_RATE
-                
-                # 读取干净账本状态 
-                pos = trusted_states[agent]["pos"]
-                vel = trusted_states[agent]["vel"]
-                current_mu = trusted_states[agent]["mu"]
-                
-                # 积分计算下一帧的滚转角
-                mu_cmd = current_mu + roll_rate_cmd * dt
-                # 将角度严格规范化到 [-pi, pi] 避免数值溢出
-                mu_cmd = (mu_cmd + np.pi) % (2 * np.pi) - np.pi
+                # 3. 离散动作解包 (BFM 指令)
+                action_idx = int(actions[agent]) 
+                n_x_cmd, n_n_cmd, target_mu = self.bfm_action_mapping[action_idx]
                 
                 # ==========================================================
 
@@ -560,29 +551,46 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                     if self.evader_maneuver == "turn_left":
                         n_x_cmd = 0.0          # 保持匀速
                         n_n_cmd = 2.0          # 2G 法向过载
-                        mu_cmd = np.pi / 3.0   # 60度滚转 (保持高度不掉)
+                        target_mu = np.pi / 3.0   # 60度滚转 (保持高度不掉)
                     elif self.evader_maneuver == "turn_right":
                         n_x_cmd = 0.0
                         n_n_cmd = 2.0
-                        mu_cmd = -np.pi / 3.0  # 向右 60度滚转
+                        target_mu = -np.pi / 3.0  # 向右 60度滚转
                     else: # 直飞
                         n_x_cmd = 0.0
                         n_n_cmd = 1.0
-                        mu_cmd = 0.0
+                        target_mu = 0.0
                 # ====================================================================
 
-                agent_current_z = pos[2]
-
-                # GPWS 近地警告覆盖
-                # 如果低于 800 米，且具有超过 5m/s 的下坠速度，强制接管
-                if agent_current_z < 800.0 and vel[2] < -5.0:  
+                # GPWS 近地警告最高优先级覆盖
+                if pos[2] < 800.0 and vel[2] < -5.0:   # 如果低于 800 米，且具有超过 5m/s 的下坠速度，强制接管
                     n_n_cmd = current_max_g  # 强制给足最大过载拉起
-                    mu_cmd = 0.0             # 强制改平
+                    target_mu = 0.0             # 强制改平
 
+                # 4. === 核心：物理平滑过渡机制 (一阶惯性延迟) ===
+                # tau_g 是飞机的过载建立时间常数 (秒)。0.4 秒意味着指令下达后，约 0.4 秒达到目标 G 值的 63%
+                tau_g = 0.4 
+                alpha_g = dt / (tau_g + dt)
+                
+                # 平滑逼近：真实过载 = 上一帧过载 + (目标过载 - 上一帧过载) * 平滑系数
+                current_controls[agent]["n_x"] += (n_x_cmd - current_controls[agent]["n_x"]) * alpha_g
+                current_controls[agent]["n_n"] += (n_n_cmd - current_controls[agent]["n_n"]) * alpha_g
+                
+                actual_n_x = current_controls[agent]["n_x"]
+                actual_n_n = current_controls[agent]["n_n"]
+
+                # 滚转角控制 (通过 P 控制器平滑逼近绝对角度)
+                roll_error = target_mu - current_mu
+                roll_error = (roll_error + np.pi) % (2 * np.pi) - np.pi # 限制在 [-pi, pi]
+                
+                MAX_ROLL_RATE = np.pi # 滚转率限制：180度/秒
+                roll_rate_cmd = np.clip(roll_error * 4.0, -MAX_ROLL_RATE, MAX_ROLL_RATE) # 增益系数为 4.0
+                mu_cmd = current_mu + roll_rate_cmd * dt
+
+                # 5. 包线限制计算准备
                 V = np.linalg.norm(vel)
-                if V < 1e-3: V = 1e-3  # 防止除以 0
+                if V < 1e-3: V = 1e-3  # 防止除以 0 导致数值崩溃
 
-                # 包线限制 
                 # A. 升力限制 (低速时无法拉出大过载，升力与速度的平方成正比)
                 # 物理依据：升力与速度的平方成正比。计算当前速度下能拉出的极限 G 值。
                 available_n_lift = ((V / self.CORNER_SPEED) ** 2) * current_max_g
@@ -592,18 +600,20 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 actual_min_n = max(current_min_g, -available_n_lift)
                 
                 # C. 将网络输出的 G 值强制压入真实的 V-n 包线内
-                n_n = np.clip(n_n_cmd, actual_min_n, actual_max_n)
+                n_n = np.clip(actual_n_n, actual_min_n, actual_max_n)
                 mu = mu_cmd
 
                 # D. 切向过载 (加减速) 的简易动力学限制
-                n_x = n_x_cmd
-                if V > current_max_speed and n_x_cmd > 0:
+                n_x = actual_n_x
+                if V > current_max_speed and actual_n_x > 0:
                     n_x = 0.0  # 超过极速无法继续加速 (阻力壁垒)
-                elif V < self.STALL_SPEED and n_x_cmd < 0:
+                elif V < self.STALL_SPEED and actual_n_x < 0:
                     n_x = 0.0  # 接近失速时无法继续减速
-                
+
+                # 6. 开始欧拉积分计算姿态更新
                 gamma = np.arcsin(np.clip(vel[2] / V, -1.0, 1.0)) # 航迹俯仰角
                 chi = np.arctan2(vel[1], vel[0])                  # 航迹方位角
+                
                 V_dot = self.g * (n_x - np.sin(gamma))
                 
                 # 防止大俯仰角时出现奇点 (gamma 接近 90 度时 cos(gamma) 接近 0)
@@ -686,13 +696,6 @@ class Drone1v1MARLEnv(MultiAgentEnv):
             raw_micro_delta = new_dist - current_micro_dist
             micro_delta_dist = np.clip(raw_micro_delta, -20.0, 20.0) 
             current_micro_dist = new_dist
-
-            # 更新 gym-pybullet-drones 的内置缓存...
-            if hasattr(self.pyb_env, '_updateAndStoreKinematicInformation'):
-                self.pyb_env._updateAndStoreKinematicInformation()
-
-            # 重新提取一次绝对干净的物理状态...
-            new_attacker_state = self.pyb_env._getDroneStateVector(attacker_id)
 
             # 在微小帧内，重新计算战术几何 (ATA, AA, HCA)
             # 1. 从当前帧的状态中提取双方的真实物理四元数
@@ -784,6 +787,8 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 # cos_collision 衡量的是“相对速度”是否指向目标，这是直线拦截的核心！
                 cos_collision = np.clip(np.dot(rel_vel_dir, los_dir), -1.0, 1.0)
                 
+                reward_A_tracking = 0.0
+
                 # 1. 相对速度追踪奖励 (降低权重，平滑梯度)
                 if cos_collision > 0.0:
                     reward_A_tracking += cos_collision * 8.0 * dt
@@ -940,7 +945,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
             # 将 cos_ata_attacker > 0.5 (60度) 提高到 > 0.866 (30度)！
             # 只有机头真正在瞄准敌机时，掠过才算作有效的武器发射
             elif new_dist < WEZ_RADIUS and raw_micro_delta > 0 and self.macro_step > 2 and cos_ata_attacker > 0.866:
-                miss_distance = new_dist - raw_micro_delta 
+                miss_distance = current_micro_dist # 【修复】：直接使用拉大前的最后一刻距离作为最小脱靶量
                 score_ratio = 1.0 - ((miss_distance - 50.0) / (WEZ_RADIUS - 50.0))
                 
                 # 提高结算奖励的门槛，如果擦边过，只能拿到微弱的分数
@@ -980,9 +985,9 @@ class Drone1v1MARLEnv(MultiAgentEnv):
 
         # --- 退出 Frame Skip 循环，结算当前决策步的最终结果 ---
 
-        # 【新增：宏观战术趋势奖励结算】
+        # 宏观战术趋势奖励结算
         if "attacker_0" in total_rewards and not terminations.get("attacker_0", False):
-            # 1. 获取 0.2 秒动作执行完毕后的最终状态
+            # 1. 获取动作执行完毕后的最终状态
             final_A_state = self.pyb_env._getDroneStateVector(attacker_id)
             final_E_state = self.pyb_env._getDroneStateVector(evader_id)
             
@@ -998,12 +1003,11 @@ class Drone1v1MARLEnv(MultiAgentEnv):
             # 3. 算出这个宏观步最终的 ATA 余弦值
             final_cos_ata = np.clip(np.dot(final_forward_A, macro_los_dir), -1.0, 1.0)
             
-            # 4. 计算 0.2 秒内的净变化量 (Delta)
+            # 4. 计算内的净变化量 (Delta)
             macro_delta_cos = final_cos_ata - getattr(self, 'last_cos_ata_A', final_cos_ata)
             
             # 5. 给予宏观趋势奖励并更新缓存
             if macro_delta_cos > 0:
-                # 既然是 0.2 秒的积累量，这里的权重可以适当给大一点
                 total_rewards["attacker_0"] += macro_delta_cos * 50.0 
                 
             self.last_cos_ata_A = final_cos_ata

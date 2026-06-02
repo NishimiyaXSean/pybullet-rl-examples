@@ -111,16 +111,10 @@ if __name__ == "__main__":
             model={"custom_model": "mappo_centralized_critic"},
             train_batch_size=8192,
             minibatch_size=1024,
-            lr=5e-5, 
-
-            # 【关键修改 1】：连续动作空间彻底关闭强制熵增加
-            entropy_coeff=0.0,
-
+            lr=5e-5,
+            entropy_coeff=0.01,
             clip_param=0.2, # PPO Actor 截断
-
-            # 【关键修改 2】：大幅放宽 Critic 网络的截断，防止价值网络窒息
-            vf_clip_param=1000.0,
-
+            vf_clip_param=1000.0, # 大幅放宽 Critic 网络的截断，防止价值网络窒息
             gamma=0.99,         # 折扣因子 (越大越看重长期收益)
             lambda_=0.95,        # GAE 参数 (默认 0.95)
             kl_coeff=0.2,        # KL 散度惩罚系数 (默认 0.2)
