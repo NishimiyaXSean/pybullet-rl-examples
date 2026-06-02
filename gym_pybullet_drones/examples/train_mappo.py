@@ -17,10 +17,9 @@ from ray.rllib.algorithms.ppo import PPOConfig
 from ray.tune.registry import register_env
 from ray.rllib.algorithms.callbacks import DefaultCallbacks
 
-# ================= 新增：引入自定义 MAPPO 网络和模型注册器 =================
+# 引入自定义 MAPPO 网络和模型注册器 
 from ray.rllib.models import ModelCatalog
 from mappo_model import MAPPOModel
-# ====================================================================
 
 # 环境代码保存在 marl_env.py 中，类名叫 Drone1v1MARLEnv
 from marl_env import Drone1v1MARLEnv
@@ -304,9 +303,9 @@ if __name__ == "__main__":
             # 你在 callback 里记录的 custom_metrics 也会原封不动保存在这里
             success_hist = hist_stats.get("rate_success", [])
 
-            # 【新增】将当前难度阶段画到图表里
-            current_stage = result.get("curriculum_stage", 1)
-            tb_writer.add_scalar("5_Network_Stats/Curriculum_Stage", current_stage, i+1)
+            # 将当前难度阶段画到图表里
+            # 【修复】将 current_stage = ... 删除，直接用大写的 CURRENT_STAGE
+            tb_writer.add_scalar("5_Network_Stats/Curriculum_Stage", CURRENT_STAGE, i+1)
 
             # 遍历这一轮收集到的所有完整回合
             for idx in range(len(a_rewards_hist)):

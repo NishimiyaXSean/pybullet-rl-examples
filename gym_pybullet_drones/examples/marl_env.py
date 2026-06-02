@@ -237,14 +237,17 @@ class Drone1v1MARLEnv(MultiAgentEnv):
         # 初始化时间步与两架飞机的局部追踪变量
         self.step_counter = 0  # 留着给底层备用
         self.macro_step = 0    # 真正的宏观决策步数
-            
+
         # 计算开局时的初始距离 (用于第一帧的奖励计算基准)
         attacker_pos = self.pyb_env._getDroneStateVector(0)[0:3]
         evader_pos = self.pyb_env._getDroneStateVector(1)[0:3]
         self.prev_dist = np.linalg.norm(attacker_pos - evader_pos)
 
         # 记录上一帧的 ATA 余弦值，用于计算趋势
-        self.last_cos_ata_A = 1.0
+        rot_mat_init_A = p.getMatrixFromQuaternion(self.pyb_env._getDroneStateVector(0)[3:7])
+        forward_init_A = np.array([rot_mat_init_A[0], rot_mat_init_A[3], rot_mat_init_A[6]])
+        los_init_dir = (evader_pos - attacker_pos) / (self.prev_dist + 1e-6)
+        self.last_cos_ata_A = np.clip(np.dot(forward_init_A, los_init_dir), -1.0, 1.0)
 
         # ================= 课程学习 Stage 1.0：移动打靶 =================
         # 【降维】强制目标机只能直飞
@@ -468,22 +471,6 @@ class Drone1v1MARLEnv(MultiAgentEnv):
         # 提取两架飞机的初始状态 (用于后续计算奖励和碰撞)
         attacker_id = 0
         evader_id = 1
-
-        '''
-        # 动作平滑度惩罚 (连续动作空间专属)
-        for agent, act in actions.items():
-            last_act = self.last_actions.get(agent, np.zeros(3, dtype=np.float32))
-            
-            # 计算这一帧和上一帧推杆动作的差异大小 (欧氏距离 L2 Norm)
-            action_delta = np.linalg.norm(act - last_act)
-            
-            # 根据猛推摇杆的剧烈程度给予惩罚 (系数 0.01 比较温和，鼓励丝滑微调)
-            total_rewards[agent] -= 0.01 * action_delta 
-            
-            # 存入本帧动作，必须使用 .copy() 防止内存地址的引用污染
-            self.last_actions[agent] = np.array(act).copy()
-        '''
-
         attacker_state_init = self.pyb_env._getDroneStateVector(attacker_id)
         evader_state_init = self.pyb_env._getDroneStateVector(evader_id)
         attacker_rpy = attacker_state_init[7:10]
@@ -930,8 +917,8 @@ class Drone1v1MARLEnv(MultiAgentEnv):
             
             # 1. 动能撞击 / 击杀成功
             if new_dist < 50.0 and self.macro_step > 2: # 增加暖机帧保护
-                if not terminations["attacker_0"]: total_rewards["attacker_0"] += 50.0
-                if not terminations["evader_0"]: total_rewards["evader_0"] -= 50.0
+                if not terminations["attacker_0"]: total_rewards["attacker_0"] += 2000.0
+                if not terminations["evader_0"]: total_rewards["evader_0"] -= 2000.0
                 terminations["attacker_0"] = True
                 terminations["evader_0"] = True
 
@@ -949,7 +936,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 score_ratio = 1.0 - ((miss_distance - 50.0) / (WEZ_RADIUS - 50.0))
                 
                 # 提高结算奖励的门槛，如果擦边过，只能拿到微弱的分数
-                reward_terminal = 50.0 * (np.clip(score_ratio, 0.0, 1.0) ** 2)
+                reward_terminal = 2000.0 * (np.clip(score_ratio, 0.0, 1.0) ** 2)
                 
                 # 双方进行分数结算 (零和博弈)
                 if "attacker_0" in total_rewards and not terminations["attacker_0"]: total_rewards["attacker_0"] += reward_terminal
@@ -969,12 +956,12 @@ class Drone1v1MARLEnv(MultiAgentEnv):
             for agent, state in zip(["attacker_0", "evader_0"], [new_attacker_state, new_evader_state]):
                 if agent in actions and not terminations[agent]: # 只有这个 agent 还在计分板上，才对它进行边界惩罚！
                     if state[2] < 10:
-                        total_rewards[agent] -= 20.0
+                        total_rewards[agent] -= 200.0
                         terminations[agent] = True
                         infos[agent]["reason"] = "ground_crash"
                         crash_occurred = True 
                     elif state[2] > 4900.0:
-                        total_rewards[agent] -= 20.0
+                        total_rewards[agent] -= 200.0
                         terminations[agent] = True
                         infos[agent]["reason"] = "out_of_bounds" 
                         crash_occurred = True
