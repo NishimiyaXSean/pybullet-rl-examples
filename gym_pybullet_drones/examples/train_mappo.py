@@ -135,7 +135,7 @@ if __name__ == "__main__":
     print("="*45 + "\n")
 
     # 加载旧模型以继续训练
-    OLD_CHECKPOINT = os.path.abspath("./marl_runs/mappo_run_0603_1335/checkpoints/checkpoint_best_iter_025" )
+    OLD_CHECKPOINT = os.path.abspath("./marl_runs/mappo_run_0603_1515/checkpoints/checkpoint_stage_2_to_3_iter_574" )
 
     if os.path.exists(OLD_CHECKPOINT):
         print(f"正在恢复旧模型记忆: {OLD_CHECKPOINT}")
@@ -287,6 +287,8 @@ if __name__ == "__main__":
             # ====================================================================
             # 植入实测与晋级循环
             # ====================================================================
+            is_just_upgraded = False  # 【新增】初始化拦截标识
+
             if (i + 1) % EVAL_INTERVAL == 0:
                 print(f"\n{'='*45}")
                 print(f"正在进行 Stage {CURRENT_STAGE} 确定性高压测试 ({TEST_EPISODES} 局)...")
@@ -337,6 +339,7 @@ if __name__ == "__main__":
                     # 2. 强制重置最佳胜率历史记录
                     # 防止因为上一阶段的“高分滤镜”，导致下一阶段艰难爬坡时无法触发最优模型保存机制
                     best_success_rate = -0.01 
+                    is_just_upgraded = True   # 【新增】标记本轮发生了阶级跨越，阻止旧数据污染新基线
                     print(f"--> [系统重置] 已清空上一阶段最高胜率记录，准备记录 Stage {CURRENT_STAGE} 的新征程！")
                     # ====================================================================
                     
@@ -379,7 +382,8 @@ if __name__ == "__main__":
             tb_writer.flush() # 强制立刻写盘，绝不缓存延迟！
             
             # 保存最高成功率模型
-            if success_rate > best_success_rate:
+            # 【修改】加入 and not is_just_upgraded，拦截晋级当轮的幽灵数据
+            if success_rate > best_success_rate and not is_just_upgraded:
                 # 针对 0% 的初次保存做个特殊打印，后面的正常打印提升比例
                 if best_success_rate < 0:
                     print(f"建立初始战术基线！当前成功率：{success_rate * 100:.1f}%")
