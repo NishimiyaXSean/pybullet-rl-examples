@@ -135,12 +135,12 @@ if __name__ == "__main__":
     print("="*45 + "\n")
 
     # 加载旧模型以继续训练
-    OLD_CHECKPOINT = os.path.abspath("./marl_runs/mappo_run_0603_1002/checkpoints/checkpoint_best_iter_039" )
+    OLD_CHECKPOINT = os.path.abspath("./marl_runs/mappo_run_0603_1335/checkpoints/checkpoint_best_iter_025" )
 
     if os.path.exists(OLD_CHECKPOINT):
         print(f"正在恢复旧模型记忆: {OLD_CHECKPOINT}")
         algo.restore(OLD_CHECKPOINT)
-        
+
         # ==================== 新增：清除旧的优化器状态，防止维度冲突 ====================
         print("正在清除优化器历史动量 (Amnesia Protocol)...")
         def reset_optimizer_state(env_runner):
@@ -165,7 +165,7 @@ if __name__ == "__main__":
     # 初始化测试环境与全局课程变量
     # ====================================================================
     TEST_ENV = Drone1v1MARLEnv(gui=False)
-    CURRENT_STAGE = 1          # 假设你当前是从 Stage 1 继续训练
+    CURRENT_STAGE = 2          # 假设你当前是从 Stage 2 继续训练
     EVAL_INTERVAL = 10         # 每训练 10 次迭代，进行一次确定性压测
     TEST_EPISODES = 50         # 每次压测 50 局
     TARGET_SUCCESS_RATE = 0.75 # 晋级阈值：实测胜率达到 75% 升阶
@@ -199,6 +199,9 @@ if __name__ == "__main__":
         for i in range(TRAIN_ITERATIONS): # 每一次迭代为train_batch_size
             # step() 会让所有 worker 跑环境，收集数据，更新神经网络，然后返回统计信息
             result = algo.train()
+
+            # 【关键修复】提取大脑中真实的迭代年龄，代替外部的 i
+            real_iter = result["training_iteration"]
 
             # 尝试从 env_runners 中获取数据，如果没有则退回使用 result 本身
             stats = result.get("env_runners", result)
@@ -263,7 +266,7 @@ if __name__ == "__main__":
                 algo.env_runner_group.foreach_env_runner(set_lr)
             # =================================================================
             
-            print(f"迭代 {i+1:03d} | "
+            print(f"迭代 {real_iter:03d} | "
                   f"奖励(主/敌): {reward_A:6.1f} / {reward_E:6.1f} | "
                   f"本轮真实终局 -> 击杀:{success_rate*100:5.1f}% | 坠地:{crash_rate*100:5.1f}% | 越界:{oob_rate*100:5.1f}% | 超时:{timeout_rate*100:5.1f}% | "
                   f"本轮局数: {episodes_this_iter:3d} | "
@@ -271,15 +274,15 @@ if __name__ == "__main__":
                   f"总训练步数: {total_steps}")
             
             # 写入宏观平均曲线 (横坐标为 Iteration)
-            tb_writer.add_scalar("1_Rewards/Attacker", reward_A, i+1)
-            tb_writer.add_scalar("1_Rewards/Evader", reward_E, i+1)
+            tb_writer.add_scalar("1_Rewards/Attacker", reward_A, real_iter)
+            tb_writer.add_scalar("1_Rewards/Evader", reward_E, real_iter)
             
-            tb_writer.add_scalar("2_Combat_Rates/Success_Kill", success_rate * 100, i+1)
-            tb_writer.add_scalar("2_Combat_Rates/Ground_Crash", crash_rate * 100, i+1)
-            tb_writer.add_scalar("2_Combat_Rates/Out_of_Bounds", oob_rate * 100, i+1)
-            tb_writer.add_scalar("2_Combat_Rates/Timeout", timeout_rate * 100, i+1)
-            tb_writer.add_scalar("5_Network_Stats/Entropy", entropy, i+1)
-            tb_writer.add_scalar("5_Network_Stats/Learning_Rate", CURRENT_LR, i+1)
+            tb_writer.add_scalar("2_Combat_Rates/Success_Kill", success_rate * 100, real_iter)
+            tb_writer.add_scalar("2_Combat_Rates/Ground_Crash", crash_rate * 100, real_iter)
+            tb_writer.add_scalar("2_Combat_Rates/Out_of_Bounds", oob_rate * 100, real_iter)
+            tb_writer.add_scalar("2_Combat_Rates/Timeout", timeout_rate * 100, real_iter)
+            tb_writer.add_scalar("5_Network_Stats/Entropy", entropy, real_iter)
+            tb_writer.add_scalar("5_Network_Stats/Learning_Rate", CURRENT_LR, real_iter)
             
             # ====================================================================
             # 植入实测与晋级循环
@@ -317,12 +320,25 @@ if __name__ == "__main__":
                 print(f"--> 实测完成！真实击杀率: {eval_success_rate*100:.1f}% ({success_count}/{TEST_EPISODES})")
                 
                 # 将真实的实测胜率写入 TensorBoard
-                tb_writer.add_scalar("2_Combat_Rates/Eval_Success_Rate", eval_success_rate * 100, i+1)
+                tb_writer.add_scalar("2_Combat_Rates/Eval_Success_Rate", eval_success_rate * 100, real_iter)
                 
                 # 判定是否满足晋级条件！
                 if eval_success_rate >= TARGET_SUCCESS_RATE and CURRENT_STAGE < 3:
+                    old_stage = CURRENT_STAGE
                     CURRENT_STAGE += 1
                     print(f"突破瓶颈！真实胜率达标，全军晋级到 Stage {CURRENT_STAGE}！")
+                    
+                    # ================= 新增核心逻辑：里程碑保存与打分重置 =================
+                    # 1. 立即保存这个具有纪念意义的转阶段模型 (命名加上特殊的 Stage 标记)
+                    transition_save_path = os.path.join(CHECKPOINT_DIR, f"checkpoint_stage_{old_stage}_to_{CURRENT_STAGE}_iter_{real_iter:03d}")
+                    algo.save(transition_save_path)
+                    print(f"--> [里程碑] 完美通过 Stage {old_stage}，毕业模型已保存至: {transition_save_path}")
+
+                    # 2. 强制重置最佳胜率历史记录
+                    # 防止因为上一阶段的“高分滤镜”，导致下一阶段艰难爬坡时无法触发最优模型保存机制
+                    best_success_rate = -0.01 
+                    print(f"--> [系统重置] 已清空上一阶段最高胜率记录，准备记录 Stage {CURRENT_STAGE} 的新征程！")
+                    # ====================================================================
                     
                     # 将最新难度广播给底层所有并行搜集数据的 Workers
                     algo.env_runner_group.foreach_env(
@@ -343,7 +359,7 @@ if __name__ == "__main__":
 
             # 将当前难度阶段画到图表里
             # 【修复】将 current_stage = ... 删除，直接用大写的 CURRENT_STAGE
-            tb_writer.add_scalar("5_Network_Stats/Curriculum_Stage", CURRENT_STAGE, i+1)
+            tb_writer.add_scalar("5_Network_Stats/Curriculum_Stage", CURRENT_STAGE, real_iter)
 
             # 遍历这一轮收集到的所有完整回合
             for idx in range(len(a_rewards_hist)):
@@ -373,7 +389,7 @@ if __name__ == "__main__":
                 best_success_rate = success_rate
                 
                 # 构建带有迭代次数的新文件夹名称
-                new_best_dir = os.path.join(CHECKPOINT_DIR, f"checkpoint_best_iter_{i+1:03d}")
+                new_best_dir = os.path.join(CHECKPOINT_DIR, f"checkpoint_best_iter_{real_iter:03d}")
                 
                 # 保存最新的最优模型
                 algo.save(new_best_dir) 
@@ -388,7 +404,7 @@ if __name__ == "__main__":
 
             # 每 50 次迭代保存一次模型
             if (i + 1) % 50 == 0:
-                current_save_path = os.path.join(CHECKPOINT_DIR,f"checkpoint_{i+1:06d}")
+                current_save_path = os.path.join(CHECKPOINT_DIR,f"checkpoint_{real_iter:06d}")
                 algo.save(current_save_path)
                 print(f"--> 模型已保存至: {current_save_path}")
 

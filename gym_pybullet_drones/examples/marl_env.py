@@ -41,7 +41,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
 
         self.CTRL_FREQ = 60
         self.is_manual_mode = False
-        self.EPISODE_LEN_SEC = 60 # 回合最大时长
+        self.EPISODE_LEN_SEC = 120 # 回合最大时长
         self.cpa_radius = 300.0   # 近炸引信触发半径
 
         # --- 战斗机飞行包线参数 (F-16/歼-10 级别模拟) ---
@@ -842,18 +842,26 @@ class Drone1v1MARLEnv(MultiAgentEnv):
         
                 reward_A_ramming = 0.0
 
-                if new_dist <= TERMINAL_RADIUS: # 动能冲刺奖励
-                    # 替换绝对速度奖励为接近速度奖励
-                    los_vec = new_evader_pos - new_attacker_pos
-                    los_dir = los_vec / (np.linalg.norm(los_vec) + 1e-6)
-                    attacker_vel = self.pyb_env._getDroneStateVector(attacker_id)[10:13]
+                # ================= 核心优化：全局接近率 (Closing Speed) 奖励 =================
+                # 无论多远，只要速度矢量指向目标（拉近距离），就给予奖励，指引它长程极速冲刺！
+                los_vec = new_evader_pos - new_attacker_pos
+                los_dir = los_vec / (np.linalg.norm(los_vec) + 1e-6)
+                attacker_vel = trusted_states["attacker_0"]["vel"]
+                
+                # 接近率 = 速度在视线方向上的投影
+                closing_speed = np.dot(attacker_vel, los_dir) 
+                
+                if closing_speed > 0:
+                    # 全局基础冲刺奖励 (2500m 外也生效)
+                    reward_A_ramming += closing_speed * 0.02 * dt
                     
-                    # 引入水平冲刺系数 
-                    # 避免主机在最后一刻从天顶垂直“砸”向目标。只有当高度差极小时，才给予 100% 的速度冲刺奖励。高度差越大，冲刺奖励的折扣越狠。
-                    z_alignment_factor = np.clip((200.0 - abs(dz)) / 200.0, 0.0, 1.0)
-                    closing_speed = np.dot(attacker_vel, los_dir) # 计算速度在视线方向上的投影 (接近率)
-                    if closing_speed > 0:
-                        reward_A_ramming = closing_speed * 0.05 * dt * z_alignment_factor
+                    # 当进入末端抵近阶段 (400m 以内) 时，启动高精度的“动能撞击/导弹引导”逻辑
+                    if new_dist <= TERMINAL_RADIUS: 
+                        # 引入水平冲刺系数：避免主机从天顶垂直“砸”向目标
+                        z_alignment_factor = np.clip((200.0 - abs(dz)) / 200.0, 0.0, 1.0)
+                        # 额外叠加末端冲刺大额奖励
+                        reward_A_ramming += closing_speed * 0.05 * dt * z_alignment_factor
+                # =========================================================================
                               
                 # 单帧结算
                 total_rewards["attacker_0"] += (
