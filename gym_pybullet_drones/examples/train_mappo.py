@@ -17,10 +17,9 @@ from ray.rllib.algorithms.ppo import PPOConfig
 from ray.tune.registry import register_env
 from ray.rllib.algorithms.callbacks import DefaultCallbacks
 
-# ================= 新增：引入自定义 MAPPO 网络和模型注册器 =================
+# 引入自定义 MAPPO 网络和模型注册器 
 from ray.rllib.models import ModelCatalog
 from mappo_model import MAPPOModel
-# ====================================================================
 
 # 环境代码保存在 marl_env.py 中，类名叫 Drone1v1MARLEnv
 from marl_env import Drone1v1MARLEnv
@@ -53,7 +52,11 @@ class DroneMetricsCallback(DefaultCallbacks):
 
 if __name__ == "__main__":
     # 1. 初始化 Ray 引擎
-    ray.init()
+    ray.init(
+        _system_config={
+            "object_timeout_milliseconds": 10000, # 延长对象超时容忍
+        }
+    )
 
     # 2. 注册环境名称
     env_name = "drone_1v1_mappo_env"
@@ -105,21 +108,13 @@ if __name__ == "__main__":
         # 5. 神经网络结构 (Net Arch)
         .training(
             model={"custom_model": "mappo_centralized_critic"},
-            train_batch_size=16384,
-            minibatch_size=2048,
-            lr=3e-4,
-            # 【修改】：将固定的 0.01 替换为线性衰减策略
-            # 格式: [初始总步数, 初始熵系数, 结束总步数, 结束熵系数]
-            # 假设环境经过 200 万步时进入 Stage 2, 熵系数从 0.01 逐渐强制降到 0.0001，逼迫它收敛。
-            entropy_coeff_schedule=[
-                [0, 0.02],         # 初始稍微提高一点点，给予破坏旧策略的动力
-                [500000, 0.01],    # 前 50 万步开始降温
-                [4000000, 0.001],  # 400万步时降到 0.001，逼迫战术成型
-                [8000000, 0.0001]
-            ],
-            clip_param=0.2, # 限制价值函数的截断
-            vf_clip_param=50.0,
-            gamma=0.999,         # 折扣因子 (越大越看重长期收益)
+            train_batch_size=8192,
+            minibatch_size=1024,
+            lr=5e-5,
+            entropy_coeff=0.01,
+            clip_param=0.2, # PPO Actor 截断
+            vf_clip_param=1000.0, # 大幅放宽 Critic 网络的截断，防止价值网络窒息
+            gamma=0.99,         # 折扣因子 (越大越看重长期收益)
             lambda_=0.95,        # GAE 参数 (默认 0.95)
             kl_coeff=0.2,        # KL 散度惩罚系数 (默认 0.2)
         )
@@ -139,16 +134,14 @@ if __name__ == "__main__":
     print(f"tensorboard --logdir=\"{PROJECT_ROOT}\"")
     print("="*45 + "\n")
 
-    
     # 加载旧模型以继续训练
-    OLD_CHECKPOINT = os.path.abspath("./marl_runs/mappo_run_0528_2109/checkpoints/checkpoint_best_iter_254" )
+    OLD_CHECKPOINT = os.path.abspath("./marl_runs/mappo_run_0602_1521/checkpoints/checkpoint_000500" )
 
     if os.path.exists(OLD_CHECKPOINT):
         print(f"正在恢复旧模型记忆: {OLD_CHECKPOINT}")
         algo.restore(OLD_CHECKPOINT)
     else:
         print("未发现旧模型，将从随机初始化开始全新训练。")
-
 
     tb_writer = SummaryWriter(log_dir=PROJECT_ROOT)
 
@@ -174,6 +167,12 @@ if __name__ == "__main__":
     best_success_rate = -0.01
     best_checkpoint_path = None    
     global_episodes = 0  # 全局回合计数器 
+
+    # ================= 新增：动态学习率控制变量 =================
+    CURRENT_LR = 5e-5      # 初始学习率 (与 config 中的 lr 保持一致)
+    MIN_LR = 5e-6          # 学习率下限 (十分之一)，防止模型彻底停止学习
+    DECAY_FACTOR = 0.98    # 每次衰减系数 (胜率达标时，当前 LR * 0.98)
+    # ============================================================
 
     print("==================================")
     print("开始 MAPPO 多智能体 1v1 空战对抗训练！")
@@ -230,6 +229,23 @@ if __name__ == "__main__":
             
             # 提取 Entropy
             entropy = learner_stats.get("entropy", 0.0)
+
+            # ================= 新增：基于胜率的动态学习率衰减 =================
+            # 当真实胜率突破 50%，且还没跌破下限时，开始温和衰减学习率
+            if success_rate > 0.50 and CURRENT_LR > MIN_LR:
+                CURRENT_LR = max(MIN_LR, CURRENT_LR * DECAY_FACTOR)
+
+                # 【核心关键】：必须将新的学习率穿透同步给底层的 PyTorch 优化器
+                def set_lr(env_runner):
+                    policy = env_runner.get_policy("policy_attacker")
+                    if policy and hasattr(policy, "_optimizers"):
+                        for opt in policy._optimizers:
+                            for param_group in opt.param_groups:
+                                param_group["lr"] = CURRENT_LR
+
+                # 广播给所有的 Worker 进程
+                algo.env_runner_group.foreach_env_runner(set_lr)
+            # =================================================================
             
             print(f"迭代 {i+1:03d} | "
                   f"奖励(主/敌): {reward_A:6.1f} / {reward_E:6.1f} | "
@@ -247,6 +263,7 @@ if __name__ == "__main__":
             tb_writer.add_scalar("2_Combat_Rates/Out_of_Bounds", oob_rate * 100, i+1)
             tb_writer.add_scalar("2_Combat_Rates/Timeout", timeout_rate * 100, i+1)
             tb_writer.add_scalar("5_Network_Stats/Entropy", entropy, i+1)
+            tb_writer.add_scalar("5_Network_Stats/Learning_Rate", CURRENT_LR, i+1)
             
             # ====================================================================
             # 植入实测与晋级循环
@@ -308,9 +325,9 @@ if __name__ == "__main__":
             # 你在 callback 里记录的 custom_metrics 也会原封不动保存在这里
             success_hist = hist_stats.get("rate_success", [])
 
-            # 【新增】将当前难度阶段画到图表里
-            current_stage = result.get("curriculum_stage", 1)
-            tb_writer.add_scalar("5_Network_Stats/Curriculum_Stage", current_stage, i+1)
+            # 将当前难度阶段画到图表里
+            # 【修复】将 current_stage = ... 删除，直接用大写的 CURRENT_STAGE
+            tb_writer.add_scalar("5_Network_Stats/Curriculum_Stage", CURRENT_STAGE, i+1)
 
             # 遍历这一轮收集到的所有完整回合
             for idx in range(len(a_rewards_hist)):
