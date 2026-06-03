@@ -134,16 +134,14 @@ if __name__ == "__main__":
     print(f"tensorboard --logdir=\"{PROJECT_ROOT}\"")
     print("="*45 + "\n")
 
-    
     # 加载旧模型以继续训练
-    OLD_CHECKPOINT = os.path.abspath("./marl_runs/mappo_run_0601_2036/checkpoints/checkpoint_best_iter_419" )
+    OLD_CHECKPOINT = os.path.abspath("./marl_runs/mappo_run_0602_1521/checkpoints/checkpoint_000500" )
 
     if os.path.exists(OLD_CHECKPOINT):
         print(f"正在恢复旧模型记忆: {OLD_CHECKPOINT}")
         algo.restore(OLD_CHECKPOINT)
     else:
         print("未发现旧模型，将从随机初始化开始全新训练。")
-
 
     tb_writer = SummaryWriter(log_dir=PROJECT_ROOT)
 
@@ -169,6 +167,12 @@ if __name__ == "__main__":
     best_success_rate = -0.01
     best_checkpoint_path = None    
     global_episodes = 0  # 全局回合计数器 
+
+    # ================= 新增：动态学习率控制变量 =================
+    CURRENT_LR = 5e-5      # 初始学习率 (与 config 中的 lr 保持一致)
+    MIN_LR = 5e-6          # 学习率下限 (十分之一)，防止模型彻底停止学习
+    DECAY_FACTOR = 0.98    # 每次衰减系数 (胜率达标时，当前 LR * 0.98)
+    # ============================================================
 
     print("==================================")
     print("开始 MAPPO 多智能体 1v1 空战对抗训练！")
@@ -225,6 +229,23 @@ if __name__ == "__main__":
             
             # 提取 Entropy
             entropy = learner_stats.get("entropy", 0.0)
+
+            # ================= 新增：基于胜率的动态学习率衰减 =================
+            # 当真实胜率突破 50%，且还没跌破下限时，开始温和衰减学习率
+            if success_rate > 0.50 and CURRENT_LR > MIN_LR:
+                CURRENT_LR = max(MIN_LR, CURRENT_LR * DECAY_FACTOR)
+
+                # 【核心关键】：必须将新的学习率穿透同步给底层的 PyTorch 优化器
+                def set_lr(env_runner):
+                    policy = env_runner.get_policy("policy_attacker")
+                    if policy and hasattr(policy, "_optimizers"):
+                        for opt in policy._optimizers:
+                            for param_group in opt.param_groups:
+                                param_group["lr"] = CURRENT_LR
+
+                # 广播给所有的 Worker 进程
+                algo.env_runner_group.foreach_env_runner(set_lr)
+            # =================================================================
             
             print(f"迭代 {i+1:03d} | "
                   f"奖励(主/敌): {reward_A:6.1f} / {reward_E:6.1f} | "
@@ -242,6 +263,7 @@ if __name__ == "__main__":
             tb_writer.add_scalar("2_Combat_Rates/Out_of_Bounds", oob_rate * 100, i+1)
             tb_writer.add_scalar("2_Combat_Rates/Timeout", timeout_rate * 100, i+1)
             tb_writer.add_scalar("5_Network_Stats/Entropy", entropy, i+1)
+            tb_writer.add_scalar("5_Network_Stats/Learning_Rate", CURRENT_LR, i+1)
             
             # ====================================================================
             # 植入实测与晋级循环
