@@ -140,6 +140,22 @@ if __name__ == "__main__":
     if os.path.exists(OLD_CHECKPOINT):
         print(f"正在恢复旧模型记忆: {OLD_CHECKPOINT}")
         algo.restore(OLD_CHECKPOINT)
+        
+        # ==================== 新增：清除旧的优化器状态，防止维度冲突 ====================
+        print("正在清除优化器历史动量 (Amnesia Protocol)...")
+        def reset_optimizer_state(env_runner):
+            # 获取攻击机的策略网络
+            policy = env_runner.get_policy("policy_attacker")
+            if policy and hasattr(policy, "_optimizers"):
+                for opt in policy._optimizers:
+                    # opt.state 是一个字典，里面存着 exp_avg 等历史动量。
+                    # 直接 clear() 清空它，PyTorch 会在下一步用新的 13 维权重自动重新初始化它！
+                    opt.state.clear()
+                    
+        # 利用 RLlib 的穿透机制，让所有并行的 Worker 都清空自己的优化器缓存
+        algo.env_runner_group.foreach_env_runner(reset_optimizer_state)
+        # =================================================================================
+        
     else:
         print("未发现旧模型，将从随机初始化开始全新训练。")
 
