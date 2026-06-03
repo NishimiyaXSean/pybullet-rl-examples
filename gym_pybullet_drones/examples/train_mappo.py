@@ -135,7 +135,7 @@ if __name__ == "__main__":
     print("="*45 + "\n")
 
     # 加载旧模型以继续训练
-    OLD_CHECKPOINT = os.path.abspath("./marl_runs/mappo_run_0603_1515/checkpoints/checkpoint_stage_2_to_3_iter_574" )
+    OLD_CHECKPOINT = os.path.abspath("./marl_runs/mappo_run_0603_1558/checkpoints/checkpoint_best_iter_645" )
 
     if os.path.exists(OLD_CHECKPOINT):
         print(f"正在恢复旧模型记忆: {OLD_CHECKPOINT}")
@@ -406,8 +406,8 @@ if __name__ == "__main__":
                 # 更新指针，指向刚刚保存的这个新模型
                 best_checkpoint_path = new_best_dir    
 
-            # 每 50 次迭代保存一次模型
-            if (i + 1) % 50 == 0:
+            # 每 10 次迭代保存一次模型
+            if (i + 1) % 10 == 0:
                 current_save_path = os.path.join(CHECKPOINT_DIR,f"checkpoint_{real_iter:06d}")
                 algo.save(current_save_path)
                 print(f"--> 模型已保存至: {current_save_path}")

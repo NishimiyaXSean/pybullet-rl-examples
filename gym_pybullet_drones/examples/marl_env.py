@@ -253,11 +253,12 @@ class Drone1v1MARLEnv(MultiAgentEnv):
         los_init_dir = (evader_pos - attacker_pos) / (self.prev_dist + 1e-6)
         self.last_cos_ata_A = np.clip(np.dot(forward_init_A, los_init_dir), -1.0, 1.0)
 
+        '''
         # ================= 课程学习 Stage 1.0：移动打靶 =================
         # 【降维】强制目标机只能直飞
         self.evader_maneuver = "straight"
-
         '''
+        
         # ================= 课程学习 Stage 2：随机化目标机盘旋 =================
         # 随机决定本回合目标机的机动策略。
         # 概率分布：40% 直飞，30% 左转，30% 右转
@@ -267,7 +268,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
         )
         # ====================================================================
     
-        '''
+    
         global_state_array = self._compute_global_state()
         obs_dict = {
             agent: {
