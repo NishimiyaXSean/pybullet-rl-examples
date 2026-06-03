@@ -56,9 +56,9 @@ class Drone1v1MARLEnv(MultiAgentEnv):
         self.EVADER_SPEED_COEFF = 0.625  # 速度系数 (400 * 0.625 = 250 m/s)
         self.EVADER_G_COEFF = 0.555      # 过载系数 (9.0 * 0.555 ≈ 5.0 G)
 
-        # 动作空间：离散的 11 种 BFM 动作
+        # 动作空间：离散的 13 种 BFM 动作
         self.action_spaces = {
-            agent: gym.spaces.Discrete(11)
+            agent: gym.spaces.Discrete(13)
             for agent in self.possible_agents
         }
 
@@ -67,14 +67,18 @@ class Drone1v1MARLEnv(MultiAgentEnv):
             0:  ( 0,  1,  0.0),            # a1: 匀速直飞
             1:  ( 2,  1,  0.0),            # a2: 加速直飞
             2:  (-2,  1,  0.0),            # a3: 减速直飞
-            3:  ( 0,  8,  0.0),            # a4: 跃升
-            4:  ( 0, -8,  0.0),            # a5: 俯冲
+            3:  ( 0,  8,  0.0),            # a4: 暴力跃升 (8G)
+            4:  ( 0, -8,  0.0),            # a5: 暴力俯冲 (-8G)
             5:  ( 0,  8,  np.pi / 3.0),    # a6: 左转跃升
             6:  ( 0, -8, -np.pi / 3.0),    # a7: 右转俯冲
             7:  ( 0,  8, -np.pi / 3.0),    # a8: 右转跃升
             8:  ( 0, -8,  np.pi / 3.0),    # a9: 左转俯冲
-            9:  ( 0,  2, -np.pi / 3.0),    # a10: 右转
-            10: ( 0,  2,  np.pi / 3.0)     # a11: 左转
+            9:  ( 0,  2, -np.pi / 3.0),    # a10: 缓和右转 (2G)
+            10: ( 0,  2,  np.pi / 3.0),     # a11: 缓和左转 (2G)
+
+            # === 新增：用于末端垂直微调的缓和机动 ===
+            11: ( 0,  3,  0.0),            # a12: 缓和跃升 (3G)
+            12: ( 0, -3,  0.0),            # a13: 缓和俯冲 (-3G)
         }
         
         # MAPPO 专属 Dict 观测空间
@@ -734,7 +738,9 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                     reward_A_progress = -micro_delta_dist * 0.03
 
                 # 2. 时间惩罚 (全局生效：逼迫速战速决)
-                reward_A_time = -1.0 * dt
+                time_ratio = (self.step_counter / self.CTRL_FREQ) / self.EPISODE_LEN_SEC
+                # 时间惩罚随时间推移越来越重：开局 -1分/秒，快结束时变成 -6分/秒
+                reward_A_time = -(1.0 + time_ratio * 5.0) * dt
 
                 reward_A_z_advantage = 0.0
                 # 【核心修改】：只有当机头大致朝向敌方 (进攻态势) 时，高度优势才给分！
@@ -784,14 +790,38 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                     reward_A_tracking += cos_collision * 5.0 * dt
 
                 # 2. ATA 机头指向奖励
+                base_ata_reward = 0.0
                 if cos_ata_attacker > 0.0:
-                    # 机头在前半球，基础奖励，角度越正分越高
-                    reward_A_tracking += cos_ata_attacker * 20.0 * dt
+                    # 机头在前半球，计算基础奖励
+                    base_ata_reward = cos_ata_attacker * 20.0 * dt
                     if cos_ata_attacker > 0.866: # 进入前 30 度 (高阶锁定)
-                        reward_A_tracking += 15.0 * dt
+                        base_ata_reward += 15.0 * dt
+                    
+                    # === 新增：末端等高约束 (共面惩罚) ===
+                    # 当距离拉近到 1500 米以内时，开始考核高度差
+                    if new_dist < 1500.0:
+                        # 容忍 50 米的高度差，超过 50 米开始产生扣分惩罚
+                        z_error = max(0.0, abs(dz) - 50.0) 
+                        
+                        # 高度差越大，惩罚越重，最大扣除基础奖励的 50%
+                        # 假设高度差达到 500 米，将受到极大的惩罚
+                        z_penalty_factor = np.clip(z_error / 500.0, 0.0, 0.5) 
+                        
+                        # 结合你之前的防摸鱼机制：
+                        if micro_delta_dist < 0:
+                            # 拉近距离时：获得奖励，但要扣除高度不一致的惩罚
+                            reward_A_tracking += base_ata_reward * (1.0 - z_penalty_factor)
+                        else:
+                            # 没拉近距离时：只给 1 折
+                            reward_A_tracking += base_ata_reward * 0.1
+                    else:                  
+                        # 远距离时，不在乎高度差，全额给分
+                        if micro_delta_dist < 0:
+                            reward_A_tracking += base_ata_reward
+                        else:
+                            reward_A_tracking += base_ata_reward * 0.1
                 else:
-                    # 【重罚背对】机头在后半球，给予严厉的持续惩罚！
-                    # 迫使它产生强烈的“我想转身”的求生欲
+                    # 机头在后半球，给予严厉的持续惩罚
                     reward_A_tracking += cos_ata_attacker * 5.0 * dt
 
                 # 3. 阵位优势：适度保留
@@ -928,12 +958,15 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 infos["attacker_0"]["reason"] = "success"
                 break # 直接结束本轮 AI 决策的 repeat 循环
             
-            # 2. 严苛的脱靶量 (CPA) 结算
-            # 将 cos_ata_attacker > 0.5 (60度) 提高到 > 0.866 (30度)！
-            # 只有机头真正在瞄准敌机时，掠过才算作有效的武器发射
-            elif new_dist < WEZ_RADIUS and raw_micro_delta > 0 and self.macro_step > 2 and cos_ata_attacker > 0.866:
-                miss_distance = current_micro_dist # 【修复】：直接使用拉大前的最后一刻距离作为最小脱靶量
-                score_ratio = 1.0 - ((miss_distance - 50.0) / (WEZ_RADIUS - 50.0))
+            # 2. 真实的脱靶量 (CPA) 近炸结算
+            # 【逻辑修正】：当两机交汇达到最近点 (CPA) 的瞬间，视线向量必然与相对速度接近垂直。
+            # 这意味着在脱靶的一瞬间，攻击机的 ATA 会迅速滑落。
+            # 因此，我们不能要求在 CPA 这一帧依然保持 <30 度的高精度瞄准，只要目标还在前半球即可（cos_ata > 0.0）。
+            elif new_dist <= self.cpa_radius and raw_micro_delta > 0 and self.macro_step > 2 and cos_ata_attacker > 0.0:
+                miss_distance = current_micro_dist 
+                
+                # 用真正的近炸引信半径 (300m) 替代之前粗糙的 1000m WEZ
+                score_ratio = 1.0 - ((miss_distance - 50.0) / (self.cpa_radius - 50.0))
                 
                 # 提高结算奖励的门槛，如果擦边过，只能拿到微弱的分数
                 reward_terminal = 2000.0 * (np.clip(score_ratio, 0.0, 1.0) ** 2)
@@ -1006,7 +1039,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
 
             # 如果演习结束，且攻击机既没有坠毁也没有击杀（即苟活到了最后），给予巨额惩罚
             if not terminations.get("attacker_0", True) and "attacker_0" in total_rewards:
-                total_rewards["attacker_0"] -= 10.0  # 减轻超时惩罚，鼓励先生存再输出
+                total_rewards["attacker_0"] -= 500.0  
                 
             # 对应的，目标机成功拖延时间活到了最后，任务圆满完成，给予巨额奖励
             if not terminations.get("evader_0", True) and "evader_0" in total_rewards:
