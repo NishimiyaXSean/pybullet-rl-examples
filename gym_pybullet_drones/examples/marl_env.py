@@ -977,15 +977,15 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 break # 直接结束本轮 AI 决策的 repeat 循环
             
             # 2. 真实的脱靶量 (CPA) 近炸结算
-            # 【逻辑修正】：当两机交汇达到最近点 (CPA) 的瞬间，视线向量必然与相对速度接近垂直。
-            # 这意味着在脱靶的一瞬间，攻击机的 ATA 会迅速滑落。
-            # 因此，我们不能要求在 CPA 这一帧依然保持 <30 度的高精度瞄准，只要目标还在前半球即可（cos_ata > 0.0）。
-            elif new_dist <= self.cpa_radius and raw_micro_delta > 0 and self.macro_step > 2 and cos_ata_attacker > 0.0:
-                miss_distance = current_micro_dist 
-                score_ratio = 1.0 - ((miss_distance - 50.0) / (self.cpa_radius - 50.0))
-                
-                # 提高结算奖励的门槛，如果擦边过，只能拿到微弱的分数
-                reward_terminal = 2000.0 * (np.clip(score_ratio, 0.0, 1.0) ** 2)
+            # 【逻辑修正】：前置拦截时，CPA 瞬间目标极大概率已穿越 3-9 线进入后半球。
+            # 因此，彻底移除 cos_ata_attacker > 0.0 的苛刻限制！只要进了 300 米圈且开始脱离，就是击杀。
+            elif new_dist <= self.cpa_radius and raw_micro_delta > 0 and self.macro_step > 2:
+                miss_distance = current_micro_dist
+
+                # 【奖励修正】：原版的平方衰减会导致 280m 擦边只给十几分。
+                # 现改为：只要进圈触发近炸，保底给予 1000 分，距离越近额外奖励越高（最高再加 1000 分）
+                linear_ratio = np.clip((self.cpa_radius - miss_distance) / (self.cpa_radius - 50.0), 0.0, 1.0)
+                reward_terminal = 1000.0 + 1000.0 * linear_ratio
                 
                 # 双方进行分数结算 (零和博弈)
                 if "attacker_0" in total_rewards and not terminations["attacker_0"]: total_rewards["attacker_0"] += reward_terminal

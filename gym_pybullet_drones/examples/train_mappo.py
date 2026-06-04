@@ -409,8 +409,8 @@ if __name__ == "__main__":
                 # 更新指针，指向刚刚保存的这个新模型
                 best_checkpoint_path = new_best_dir    
 
-            # 每 10 次迭代保存一次模型
-            if (i + 1) % 10 == 0:
+            # 每 20 次迭代保存一次模型
+            if (i + 1) % 20 == 0:
                 current_save_path = os.path.join(CHECKPOINT_DIR,f"checkpoint_{real_iter:06d}")
                 algo.save(current_save_path)
                 print(f"--> 模型已保存至: {current_save_path}")
