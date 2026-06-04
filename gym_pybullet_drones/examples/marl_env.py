@@ -253,12 +253,6 @@ class Drone1v1MARLEnv(MultiAgentEnv):
         los_init_dir = (evader_pos - attacker_pos) / (self.prev_dist + 1e-6)
         self.last_cos_ata_A = np.clip(np.dot(forward_init_A, los_init_dir), -1.0, 1.0)
 
-        '''
-        # ================= 课程学习 Stage 1.0：移动打靶 =================
-        # 【降维】强制目标机只能直飞
-        self.evader_maneuver = "straight"
-        '''
-        
         # ================= 课程学习 Stage 2：随机化目标机盘旋 =================
         # 随机决定本回合目标机的机动策略。
         # 概率分布：40% 直飞，30% 左转，30% 右转
@@ -267,7 +261,6 @@ class Drone1v1MARLEnv(MultiAgentEnv):
             p=[0.4, 0.3, 0.3]
         )
         # ====================================================================
-    
     
         global_state_array = self._compute_global_state()
         obs_dict = {
@@ -500,7 +493,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
             }
         }
 
-        # ================= 新增：物理控制量的一阶惯性缓冲池 =================
+        # 物理控制量的一阶惯性缓冲池
         # 用于记录飞机当前真实的过载状态，防止 0.5s 宏观决策造成的瞬间受力突变
         current_controls = {
             "attacker_0": {"n_x": 0.0, "n_n": 1.0}, # 初始假定为匀速直飞 (1G)
@@ -535,8 +528,6 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 # 3. 离散动作解包 (BFM 指令)
                 action_idx = int(actions[agent]) 
                 n_x_cmd, n_n_cmd, target_mu = self.bfm_action_mapping[action_idx]
-                
-                # ==========================================================
 
                 # ================= Phase 2 干预：注入完美的水平盘旋 =================
                 if agent == "evader_0":
@@ -658,6 +649,9 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 else:
                     # 目标机：仅保留原有的物理边界限制，不施加任何额外惩罚
                     new_pos[2] = np.clip(new_pos[2], 1.0, 5000.0)
+
+                    # [新增] 强制消除所有垂直方向的物理误差，确保变成完美的 2D 盘旋靶
+                    new_vel[2] = 0.0
 
                 # ================= 核心修复：更新本地账本并强制洗白 PyBullet =================
                 trusted_states[agent]["pos"] = new_pos
@@ -794,9 +788,9 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 base_ata_reward = 0.0
                 if cos_ata_attacker > 0.0:
                     # 机头在前半球，计算基础奖励
-                    base_ata_reward = cos_ata_attacker * 20.0 * dt
+                    base_ata_reward = cos_ata_attacker * 6.0 * dt
                     if cos_ata_attacker > 0.866: # 进入前 30 度 (高阶锁定)
-                        base_ata_reward += 15.0 * dt
+                        base_ata_reward += 4.0 * dt
                     
                     # === 新增：末端等高约束 (共面惩罚) ===
                     # 当距离拉近到 1500 米以内时，开始考核高度差
@@ -854,14 +848,14 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 
                 if closing_speed > 0:
                     # 全局基础冲刺奖励 (2500m 外也生效)
-                    reward_A_ramming += closing_speed * 0.02 * dt
+                    reward_A_ramming += closing_speed * 0.08 * dt
                     
                     # 当进入末端抵近阶段 (400m 以内) 时，启动高精度的“动能撞击/导弹引导”逻辑
                     if new_dist <= TERMINAL_RADIUS: 
                         # 引入水平冲刺系数：避免主机从天顶垂直“砸”向目标
                         z_alignment_factor = np.clip((200.0 - abs(dz)) / 200.0, 0.0, 1.0)
                         # 额外叠加末端冲刺大额奖励
-                        reward_A_ramming += closing_speed * 0.05 * dt * z_alignment_factor
+                        reward_A_ramming += closing_speed * 0.1 * dt * z_alignment_factor
                 # =========================================================================
                               
                 # 单帧结算
@@ -951,9 +945,6 @@ class Drone1v1MARLEnv(MultiAgentEnv):
 
                 '''
             
-            # 只要进入射程，且距离开始拉大，直接结算！
-            WEZ_RADIUS = 1000.0
-            
             # 1. 动能撞击 / 击杀成功
             if new_dist < 50.0 and self.macro_step > 2: # 增加暖机帧保护
                 if not terminations["attacker_0"]: total_rewards["attacker_0"] += 2000.0
@@ -973,8 +964,6 @@ class Drone1v1MARLEnv(MultiAgentEnv):
             # 因此，我们不能要求在 CPA 这一帧依然保持 <30 度的高精度瞄准，只要目标还在前半球即可（cos_ata > 0.0）。
             elif new_dist <= self.cpa_radius and raw_micro_delta > 0 and self.macro_step > 2 and cos_ata_attacker > 0.0:
                 miss_distance = current_micro_dist 
-                
-                # 用真正的近炸引信半径 (300m) 替代之前粗糙的 1000m WEZ
                 score_ratio = 1.0 - ((miss_distance - 50.0) / (self.cpa_radius - 50.0))
                 
                 # 提高结算奖励的门槛，如果擦边过，只能拿到微弱的分数

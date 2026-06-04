@@ -16,6 +16,9 @@ experiments/learning/results/save-*
 *.txt
 *.acmi
 
+# 忽略所有 TensorBoard 日志文件
+*events.out.tfevents.*
+
 # Betaflight
 betaflight_sitl/
 
