@@ -257,8 +257,8 @@ class Drone1v1MARLEnv(MultiAgentEnv):
         # 随机决定本回合目标机的机动策略。
         self.evader_maneuver = np.random.choice(
             ["straight", "turn_left", "turn_right"], 
-            p=[1.0, 0.0, 0.0]  # 目前 100% 直飞
-            # p=[0.4, 0.3, 0.3]  # 概率分布：40% 直飞，30% 左转，30% 右转
+            # p=[1.0, 0.0, 0.0]  # 目前 100% 直飞
+            p=[0.9, 0.05, 0.05]  # 概率分布：90% 直飞，5% 左转，5% 右转
         )
         # ====================================================================
     
@@ -743,9 +743,10 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                     # 限制最大势能差额为 1000 米，防止无限爬升
                     reward_A_z_advantage = np.clip(dz, 0.0, 1000.0) * 0.002 * dt
                 elif dz < -100.0:
-                    # 【新增惩罚】：如果攻击机低于目标机超过 100 米，给予持续惩罚！
-                    # 惩罚力度随高度差增大，逼迫它把高度拉回来
-                    reward_A_z_advantage = np.clip(dz, -1000.0, 0.0) * 0.004 * dt
+                    # 【核心修复】：惩罚力度翻倍，且随着高度差扩大，惩罚越来越重
+                    # 距离目标下方越深，扣分越狠
+                    penalty_scale = np.clip(abs(dz) / 500.0, 1.0, 3.0) 
+                    reward_A_z_advantage = np.clip(dz, -1000.0, 0.0) * 0.008 * penalty_scale * dt
                 
                 reward_A_energy_loss = 0.0 
 
@@ -852,8 +853,13 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 closing_speed = np.dot(attacker_vel, los_dir) 
                 
                 if closing_speed > 0:
-                    # 全局基础冲刺奖励 (2500m 外也生效)
-                    reward_A_ramming += closing_speed * 0.08 * dt
+                    # 【核心修复】：如果攻击机的高度低于目标机超过 200 米，彻底剥夺接近奖励！
+                    if dz < -200.0:
+                        reward_A_ramming += 0.0 
+                    else:
+                        # 限制最大接近率奖励上限，防止无脑加速
+                        capped_closing_speed = np.clip(closing_speed, 0.0, 300.0)
+                        reward_A_ramming += capped_closing_speed * 0.08 * dt
                     
                     # 当进入末端抵近阶段 (400m 以内) 时，启动高精度的“动能撞击/导弹引导”逻辑
                     if new_dist <= TERMINAL_RADIUS: 

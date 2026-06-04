@@ -16,7 +16,7 @@ from mappo_model import MAPPOModel
 
 from marl_env import Drone1v1MARLEnv
 
-RELATIVE_PATH = "./marl_runs/mappo_run_0531_1606/checkpoints/checkpoint_best_iter_420" 
+RELATIVE_PATH = "./marl_runs/mappo_run_0604_1413/checkpoints/checkpoint_best_iter_691" 
 CHECKPOINT_PATH = os.path.abspath(RELATIVE_PATH)
 
 def env_creator(config):
