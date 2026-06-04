@@ -255,10 +255,10 @@ class Drone1v1MARLEnv(MultiAgentEnv):
 
         # ================= 课程学习 Stage 2：随机化目标机盘旋 =================
         # 随机决定本回合目标机的机动策略。
-        # 概率分布：40% 直飞，30% 左转，30% 右转
         self.evader_maneuver = np.random.choice(
             ["straight", "turn_left", "turn_right"], 
-            p=[0.4, 0.3, 0.3]
+            p=[1.0, 0.0, 0.0]  # 目前 100% 直飞
+            # p=[0.4, 0.3, 0.3]  # 概率分布：40% 直飞，30% 左转，30% 右转
         )
         # ====================================================================
     
@@ -739,9 +739,13 @@ class Drone1v1MARLEnv(MultiAgentEnv):
 
                 reward_A_z_advantage = 0.0
                 # 【核心修改】：只有当机头大致朝向敌方 (进攻态势) 时，高度优势才给分！
-                if dz > 0 and cos_ata_attacker > -0.2:
+                if dz > 50.0 and cos_ata_attacker > -0.2:
                     # 限制最大势能差额为 1000 米，防止无限爬升
                     reward_A_z_advantage = np.clip(dz, 0.0, 1000.0) * 0.002 * dt
+                elif dz < -100.0:
+                    # 【新增惩罚】：如果攻击机低于目标机超过 100 米，给予持续惩罚！
+                    # 惩罚力度随高度差增大，逼迫它把高度拉回来
+                    reward_A_z_advantage = np.clip(dz, -1000.0, 0.0) * 0.004 * dt
                 
                 reward_A_energy_loss = 0.0 
 
@@ -777,9 +781,11 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 
                 reward_A_tracking = 0.0
 
-                # 1. 相对速度追踪奖励 (降低权重，平滑梯度)
+                # 1. 相对速度追踪奖励 (大幅提高权重，引导前置拦截)
                 if cos_collision > 0.0:
-                    reward_A_tracking += cos_collision * 8.0 * dt
+                    # 距离越近，速度指向的奖励权重越高 (逼迫网络在近距离切内圈)
+                    dynamic_collision_weight = 8.0 + (1000.0 / (new_dist + 100.0)) * 5.0
+                    reward_A_tracking += cos_collision * dynamic_collision_weight * dt
                 else:
                     # 速度背离目标时，轻微惩罚
                     reward_A_tracking += cos_collision * 5.0 * dt
@@ -788,19 +794,18 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 base_ata_reward = 0.0
                 if cos_ata_attacker > 0.0:
                     # 机头在前半球，计算基础奖励
-                    base_ata_reward = cos_ata_attacker * 6.0 * dt
+                    base_ata_reward = cos_ata_attacker * 4.0 * dt
                     if cos_ata_attacker > 0.866: # 进入前 30 度 (高阶锁定)
-                        base_ata_reward += 4.0 * dt
+                        base_ata_reward += 2.0 * dt
                     
                     # === 新增：末端等高约束 (共面惩罚) ===
-                    # 当距离拉近到 1500 米以内时，开始考核高度差
-                    if new_dist < 1500.0:
-                        # 容忍 50 米的高度差，超过 50 米开始产生扣分惩罚
-                        z_error = max(0.0, abs(dz) - 50.0) 
+                    # 将判定距离从 1500 米缩短到 800 米（进入格斗圈才考核高度）
+                    if new_dist < 800.0:
+                        # 容忍 150 米的高度差（战斗机合理的截获高度窗口）
+                        z_error = max(0.0, abs(dz) - 150.0)
                         
-                        # 高度差越大，惩罚越重，最大扣除基础奖励的 50%
-                        # 假设高度差达到 500 米，将受到极大的惩罚
-                        z_penalty_factor = np.clip(z_error / 500.0, 0.0, 0.5) 
+                        # 降低高度差导致的惩罚系数上限 (最大只打 7 折，不要打 5 折)
+                        z_penalty_factor = np.clip(z_error / 800.0, 0.0, 0.3)
                         
                         # 结合你之前的防摸鱼机制：
                         if micro_delta_dist < 0:
