@@ -212,6 +212,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 dy = -initial_pos[1]
                 yaw = np.arctan2(dy, dx)
                 self.attacker_init_yaw = yaw # 记录一下攻击机的朝向
+                current_init_speed = 150.0  # 主机初始速度
             else:         
                 # ================= 课程学习 Stage 1.5：全向直线拦截 =================
                 # 引入四种经典的战术初始态势，并加入 ±15度 的随机扰动防止过拟合
@@ -225,6 +226,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 # 添加随机扰动 (约 ±15 度)
                 noise = np.random.uniform(-np.pi/12, np.pi/12)
                 yaw = self.attacker_init_yaw + tactical_offset + noise
+                current_init_speed = 250.0  # 【修复】目标机直接以 250m/s 极速出生！
                 # ====================================================================
             
 
@@ -419,7 +421,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
         local_enemy_vel = np.array(local_enemy_vel)
 
         # 5. 物理量级缩放 (Pre-normalization) - 防止神经网络梯度爆炸
-        MAX_DIST = 10000.0     
+        MAX_DIST = 8000.0     
         MAX_HEIGHT = 5000.0
         MAX_VEL = 400.0    
         MAX_ANG_VEL = np.pi 
@@ -479,6 +481,13 @@ class Drone1v1MARLEnv(MultiAgentEnv):
 
         self.macro_step += 1 # 新增：每次 AI 下达指令，宏观步数推进 1 步
 
+        # 在 step 函数开头，提取完动作之后加入：
+        if np.random.rand() < 0.05:  # 期望值每 10 秒 (20个宏观步) 重新评估一次战术
+            self.evader_maneuver = np.random.choice(
+                ["straight", "turn_left", "turn_right"], 
+                p=[0.9, 0.05, 0.05] 
+            )
+
         # 绝对信任的本地物理账本
         trusted_states = {
             "attacker_0": {
@@ -526,10 +535,10 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                     current_max_speed = self.MAX_SPEED * self.EVADER_SPEED_COEFF
 
                 # 3. 离散动作解包 (BFM 指令)
-                action_idx = int(actions[agent]) 
+                action_idx = int(actions.get(agent, 0))   # 安全解包，哪怕上层没传 evader 的动作，默认给 0 (匀速直飞)
                 n_x_cmd, n_n_cmd, target_mu = self.bfm_action_mapping[action_idx]
 
-                # ================= Phase 2 干预：注入完美的水平盘旋 =================
+                # 加入水平盘旋动作 =================
                 if agent == "evader_0":
                     if self.evader_maneuver == "turn_left":
                         n_x_cmd = 0.0          # 保持匀速
@@ -543,7 +552,6 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                         n_x_cmd = 0.0
                         n_n_cmd = 1.0
                         target_mu = 0.0
-                # ====================================================================
 
                 # GPWS 近地警告最高优先级覆盖
                 if pos[2] < 800.0 and vel[2] < -5.0:   # 如果低于 800 米，且具有超过 5m/s 的下坠速度，强制接管
@@ -647,10 +655,8 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                     elif new_pos[2] < 1.0:
                         new_pos[2] = 1.0
                 else:
-                    # 目标机：仅保留原有的物理边界限制，不施加任何额外惩罚
-                    new_pos[2] = np.clip(new_pos[2], 1.0, 5000.0)
-
-                    # [新增] 强制消除所有垂直方向的物理误差，确保变成完美的 2D 盘旋靶
+                    # 目标机：废弃软性边界，直接硬锁死在出生高度，杜绝任何积分漂移
+                    new_pos[2] = self.evader_initial_z
                     new_vel[2] = 0.0
 
                 # ================= 核心修复：更新本地账本并强制洗白 PyBullet =================
@@ -853,12 +859,13 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 closing_speed = np.dot(attacker_vel, los_dir) 
                 
                 if closing_speed > 0:
-                    # 【核心修复】：如果攻击机的高度低于目标机超过 200 米，彻底剥夺接近奖励！
-                    if dz < -200.0:
-                        reward_A_ramming += 0.0 
+                    capped_closing_speed = np.clip(closing_speed, 0.0, 300.0)
+                    
+                    if dz < -50.0:
+                        # 引入平滑衰减系数：从 dz = -50(系数1.0) 线性衰减到 dz = -250(系数0.0)
+                        ramming_multiplier = np.clip((250.0 + dz) / 200.0, 0.0, 1.0)
+                        reward_A_ramming += capped_closing_speed * 0.08 * dt * ramming_multiplier
                     else:
-                        # 限制最大接近率奖励上限，防止无脑加速
-                        capped_closing_speed = np.clip(closing_speed, 0.0, 300.0)
                         reward_A_ramming += capped_closing_speed * 0.08 * dt
                     
                     # 当进入末端抵近阶段 (400m 以内) 时，启动高精度的“动能撞击/导弹引导”逻辑
@@ -998,12 +1005,12 @@ class Drone1v1MARLEnv(MultiAgentEnv):
             for agent, state in zip(["attacker_0", "evader_0"], [new_attacker_state, new_evader_state]):
                 if agent in actions and not terminations[agent]: # 只有这个 agent 还在计分板上，才对它进行边界惩罚！
                     if state[2] < 10:
-                        total_rewards[agent] -= 200.0
+                        total_rewards[agent] -= 1000.0
                         terminations[agent] = True
                         infos[agent]["reason"] = "ground_crash"
                         crash_occurred = True 
                     elif state[2] > 4900.0:
-                        total_rewards[agent] -= 200.0
+                        total_rewards[agent] -= 1000.0
                         terminations[agent] = True
                         infos[agent]["reason"] = "out_of_bounds" 
                         crash_occurred = True
