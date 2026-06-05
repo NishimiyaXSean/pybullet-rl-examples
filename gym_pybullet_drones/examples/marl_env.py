@@ -481,11 +481,25 @@ class Drone1v1MARLEnv(MultiAgentEnv):
 
         self.macro_step += 1 # 新增：每次 AI 下达指令，宏观步数推进 1 步
 
-        # 在 step 函数开头，提取完动作之后加入：
-        if np.random.rand() < 0.05:  # 期望值每 10 秒 (20个宏观步) 重新评估一次战术
+        '''
+        # ================= 进阶 Stage 3.5：启发式 RWR 与高频 3D 机动 =================
+        # 1. 雷达告警接收机 (RWR) 紧急规避逻辑
+        # 如果攻击机逼近到 1500 米内，且机头正对目标机 (ATA < 30度，即 cos_ata > 0.866)
+        if current_micro_dist < 1500.0 and getattr(self, 'last_cos_ata_A', 0.0) > 0.866:
+            # 根据当前高度决定逃逸策略
+            if trusted_states["evader_0"]["pos"][2] > 2500.0:
+                # 高空被锁定：执行极其难缠的 3D 螺旋俯冲逃逸 (极速掉高 + 转向)
+                self.evader_maneuver = "spiral_dive"
+            else:
+                # 低空/中空被锁定：执行最大过载的水平急转弯 (Break Turn)
+                self.evader_maneuver = "hard_turn_left" if np.random.rand() > 0.5 else "hard_turn_right"
+        '''
+
+        if np.random.rand() < 0.15:  # 期望值每 3.3 秒 (6.6个宏观步) 重新评估一次战术
             self.evader_maneuver = np.random.choice(
-                ["straight", "turn_left", "turn_right"], 
-                p=[0.9, 0.05, 0.05] 
+                ["straight", "turn_left", "turn_right", "climb", "dive"], 
+                # 概率分布：大幅减少呆板的直飞，加入爬升和俯冲
+                p=[0.3, 0.25, 0.25, 0.1, 0.1]
             )
 
         # 绝对信任的本地物理账本
@@ -538,7 +552,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 action_idx = int(actions.get(agent, 0))   # 安全解包，哪怕上层没传 evader 的动作，默认给 0 (匀速直飞)
                 n_x_cmd, n_n_cmd, target_mu = self.bfm_action_mapping[action_idx]
 
-                # 加入水平盘旋动作 =================
+                # 加入水平盘旋动作 
                 if agent == "evader_0":
                     if self.evader_maneuver == "turn_left":
                         n_x_cmd = 0.0          # 保持匀速
@@ -548,6 +562,14 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                         n_x_cmd = 0.0
                         n_n_cmd = 2.0
                         target_mu = -np.pi / 3.0  # 向右 60度滚转
+                    elif self.evader_maneuver == "climb":
+                        n_x_cmd = 0.0
+                        n_n_cmd = 2.5            # 2.5G 缓和跃升
+                        target_mu = 0.0
+                    elif self.evader_maneuver == "dive":
+                        n_x_cmd = 0.0
+                        n_n_cmd = -1.0           # 负 1G 俯冲
+                        target_mu = 0.0
                     else: # 直飞
                         n_x_cmd = 0.0
                         n_n_cmd = 1.0
@@ -556,7 +578,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 # GPWS 近地警告最高优先级覆盖
                 if pos[2] < 800.0 and vel[2] < -5.0:   # 如果低于 800 米，且具有超过 5m/s 的下坠速度，强制接管
                     n_n_cmd = current_max_g  # 强制给足最大过载拉起
-                    target_mu = 0.0             # 强制改平
+                    target_mu = 0.0          # 强制改平
 
                 # 4. === 核心：物理平滑过渡机制 (一阶惯性延迟) ===
                 # tau_g 是飞机的过载建立时间常数 (秒)。0.4 秒意味着指令下达后，约 0.4 秒达到目标 G 值的 63%
@@ -655,9 +677,19 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                     elif new_pos[2] < 1.0:
                         new_pos[2] = 1.0
                 else:
-                    # 目标机：废弃软性边界，直接硬锁死在出生高度，杜绝任何积分漂移
-                    new_pos[2] = self.evader_initial_z
-                    new_vel[2] = 0.0
+                    # ================= 目标机：解开硬锁死，允许 3D 机动 =================
+                    if self.evader_maneuver in ["straight", "turn_left", "turn_right"]:
+                        # 在平飞/平转时，使用轻微的 P 控制器维持初始高度，防止慢性掉高
+                        alt_error = self.evader_initial_z - new_pos[2]
+                        new_vel[2] += alt_error * 0.5 * dt 
+                        new_pos[2] = np.clip(new_pos[2], self.evader_initial_z - 100.0, self.evader_initial_z + 100.0)
+                    else:
+                        # 处于爬升、俯冲、急转、螺旋等大机动时，完全放开高度限制，只做安全保底
+                        if new_pos[2] < 500.0:  # 目标机的防地撞硬保底 (比攻击机高一点)
+                            new_pos[2] = 500.0
+                            new_vel[2] = max(0.0, new_vel[2]) # 清除向下的速度分量，模拟强行改平
+                        elif new_pos[2] > 5000.0:
+                            new_pos[2] = 5000.0
 
                 # ================= 核心修复：更新本地账本并强制洗白 PyBullet =================
                 trusted_states[agent]["pos"] = new_pos
