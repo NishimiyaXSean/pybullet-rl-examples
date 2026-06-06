@@ -41,7 +41,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
 
         self.CTRL_FREQ = 60
         self.is_manual_mode = False
-        self.EPISODE_LEN_SEC = 120 # 回合最大时长
+        self.EPISODE_LEN_SEC = 240 # 回合最大时长
         self.cpa_radius = 300.0   # 近炸引信触发半径
 
         # --- 战斗机飞行包线参数 (F-16/歼-10 级别模拟) ---
@@ -772,8 +772,8 @@ class Drone1v1MARLEnv(MultiAgentEnv):
 
                 # 2. 时间惩罚 (全局生效：逼迫速战速决)
                 time_ratio = (self.step_counter / self.CTRL_FREQ) / self.EPISODE_LEN_SEC
-                # 时间惩罚随时间推移越来越重：开局 -1分/秒，快结束时变成 -6分/秒
-                reward_A_time = -(1.0 + time_ratio * 5.0) * dt
+                # 时间惩罚随时间推移越来越重：开局 -0.5 分/秒，快结束时变成 -2.5 分/秒
+                reward_A_time = -(0.5 + time_ratio * 2.0) * dt
 
                 reward_A_z_advantage = 0.0
                 # 【核心修改】：只有当机头大致朝向敌方 (进攻态势) 时，高度优势才给分！
@@ -1037,12 +1037,12 @@ class Drone1v1MARLEnv(MultiAgentEnv):
             for agent, state in zip(["attacker_0", "evader_0"], [new_attacker_state, new_evader_state]):
                 if agent in actions and not terminations[agent]: # 只有这个 agent 还在计分板上，才对它进行边界惩罚！
                     if state[2] < 10:
-                        total_rewards[agent] -= 1000.0
+                        total_rewards[agent] -= 2000.0
                         terminations[agent] = True
                         infos[agent]["reason"] = "ground_crash"
                         crash_occurred = True 
                     elif state[2] > 4900.0:
-                        total_rewards[agent] -= 1000.0
+                        total_rewards[agent] -= 2000.0
                         terminations[agent] = True
                         infos[agent]["reason"] = "out_of_bounds" 
                         crash_occurred = True

@@ -134,7 +134,6 @@ if __name__ == "__main__":
     print(f"tensorboard --logdir=\"{PROJECT_ROOT}\"")
     print("="*45 + "\n")
 
-    '''
     # 加载旧模型以继续训练
     OLD_CHECKPOINT = os.path.abspath("./marl_runs/mappo_run_0604_2005/checkpoints/checkpoint_best_iter_499" )
 
@@ -160,7 +159,6 @@ if __name__ == "__main__":
     else:
         print("未发现旧模型，将从随机初始化开始全新训练。")
 
-    '''
 
     tb_writer = SummaryWriter(log_dir=PROJECT_ROOT)
 
@@ -168,7 +166,7 @@ if __name__ == "__main__":
     # 初始化测试环境与全局课程变量
     # ====================================================================
     TEST_ENV = Drone1v1MARLEnv(gui=False)
-    CURRENT_STAGE = 1          # 假设你当前是从 Stage 2 继续训练
+    CURRENT_STAGE = 3          # 假设你当前是从 Stage 2 继续训练
     EVAL_INTERVAL = 10         # 每训练 10 次迭代，进行一次确定性压测
     TEST_EPISODES = 50         # 每次压测 50 局
     TARGET_SUCCESS_RATE = 0.75 # 晋级阈值：实测胜率达到 75% 升阶
