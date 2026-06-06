@@ -101,8 +101,8 @@ if __name__ == "__main__":
             policy_mapping_fn=lambda agent_id, episode, worker, **kwargs: 
                 "policy_attacker" if agent_id == "attacker_0" else "policy_evader",
 
-            # 在 Phase 1 阶段，只训练攻击机的大脑，目标机大脑完全冻结不参与计算
-            policies_to_train=["policy_attacker"]
+            # 【核心修改】：解冻目标机大脑，开启全员演化！
+            policies_to_train=["policy_attacker", "policy_evader"]
         )
         
         # 5. 神经网络结构 (Net Arch)
@@ -135,7 +135,7 @@ if __name__ == "__main__":
     print("="*45 + "\n")
 
     # 加载旧模型以继续训练
-    OLD_CHECKPOINT = os.path.abspath("./marl_runs/mappo_run_0604_2005/checkpoints/checkpoint_best_iter_499" )
+    OLD_CHECKPOINT = os.path.abspath("./marl_runs/mappo_run_0606_0923/checkpoints/checkpoint_best_iter_507" )
 
     if os.path.exists(OLD_CHECKPOINT):
         print(f"正在恢复旧模型记忆: {OLD_CHECKPOINT}")
@@ -144,14 +144,15 @@ if __name__ == "__main__":
         # ==================== 新增：清除旧的优化器状态，防止维度冲突 ====================
         print("正在清除优化器历史动量 (Amnesia Protocol)...")
         def reset_optimizer_state(env_runner):
-            # 获取攻击机的策略网络
-            policy = env_runner.get_policy("policy_attacker")
-            if policy and hasattr(policy, "_optimizers"):
-                for opt in policy._optimizers:
-                    # opt.state 是一个字典，里面存着 exp_avg 等历史动量。
-                    # 直接 clear() 清空它，PyTorch 会在下一步用新的 13 维权重自动重新初始化它！
-                    opt.state.clear()
-                    
+            # 【修复】：循环清空双方大脑的优化器缓存！
+            for policy_id in ["policy_attacker", "policy_evader"]:
+                policy = env_runner.get_policy(policy_id)
+                if policy and hasattr(policy, "_optimizers"):
+                    for opt in policy._optimizers:
+                        # opt.state 是一个字典，里面存着 exp_avg 等历史动量。
+                        # 直接 clear() 清空它，PyTorch 会在下一步用新的 13 维权重自动重新初始化它！
+                        opt.state.clear()
+                        
         # 利用 RLlib 的穿透机制，让所有并行的 Worker 都清空自己的优化器缓存
         algo.env_runner_group.foreach_env_runner(reset_optimizer_state)
         # =================================================================================

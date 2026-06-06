@@ -255,6 +255,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
         los_init_dir = (evader_pos - attacker_pos) / (self.prev_dist + 1e-6)
         self.last_cos_ata_A = np.clip(np.dot(forward_init_A, los_init_dir), -1.0, 1.0)
 
+        '''
         # ================= 课程学习 Stage 2：随机化目标机盘旋 =================
         # 随机决定本回合目标机的机动策略。
         self.evader_maneuver = np.random.choice(
@@ -263,6 +264,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
             p=[0.9, 0.05, 0.05]  # 概率分布：90% 直飞，5% 左转，5% 右转
         )
         # ====================================================================
+        '''
     
         global_state_array = self._compute_global_state()
         obs_dict = {
@@ -493,7 +495,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
             else:
                 # 低空/中空被锁定：执行最大过载的水平急转弯 (Break Turn)
                 self.evader_maneuver = "hard_turn_left" if np.random.rand() > 0.5 else "hard_turn_right"
-        '''
+        
 
         if np.random.rand() < 0.15:  # 期望值每 3.3 秒 (6.6个宏观步) 重新评估一次战术
             self.evader_maneuver = np.random.choice(
@@ -501,7 +503,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 # 概率分布：大幅减少呆板的直飞，加入爬升和俯冲
                 p=[0.3, 0.25, 0.25, 0.1, 0.1]
             )
-
+        '''
         # 绝对信任的本地物理账本
         trusted_states = {
             "attacker_0": {
@@ -552,6 +554,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 action_idx = int(actions.get(agent, 0))   # 安全解包，哪怕上层没传 evader 的动作，默认给 0 (匀速直飞)
                 n_x_cmd, n_n_cmd, target_mu = self.bfm_action_mapping[action_idx]
 
+                '''
                 # 加入水平盘旋动作 
                 if agent == "evader_0":
                     if self.evader_maneuver == "turn_left":
@@ -574,6 +577,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                         n_x_cmd = 0.0
                         n_n_cmd = 1.0
                         target_mu = 0.0
+                '''
 
                 # GPWS 近地警告最高优先级覆盖
                 if pos[2] < 800.0 and vel[2] < -5.0:   # 如果低于 800 米，且具有超过 5m/s 的下坠速度，强制接管
@@ -677,19 +681,14 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                     elif new_pos[2] < 1.0:
                         new_pos[2] = 1.0
                 else:
-                    # ================= 目标机：解开硬锁死，允许 3D 机动 =================
-                    if self.evader_maneuver in ["straight", "turn_left", "turn_right"]:
-                        # 在平飞/平转时，使用轻微的 P 控制器维持初始高度，防止慢性掉高
-                        alt_error = self.evader_initial_z - new_pos[2]
-                        new_vel[2] += alt_error * 0.5 * dt 
-                        new_pos[2] = np.clip(new_pos[2], self.evader_initial_z - 100.0, self.evader_initial_z + 100.0)
-                    else:
-                        # 处于爬升、俯冲、急转、螺旋等大机动时，完全放开高度限制，只做安全保底
-                        if new_pos[2] < 500.0:  # 目标机的防地撞硬保底 (比攻击机高一点)
-                            new_pos[2] = 500.0
-                            new_vel[2] = max(0.0, new_vel[2]) # 清除向下的速度分量，模拟强行改平
-                        elif new_pos[2] > 5000.0:
-                            new_pos[2] = 5000.0
+                    # ================= 目标机物理边界 (完全交由神经网络控制) =================
+                    if new_pos[2] > 5000.0:
+                        new_pos[2] = 5000.0
+                        total_rewards[agent] -= 0.5 * dt  # 触碰天花板同样给点软惩罚
+                    elif new_pos[2] < 500.0:  
+                        # 目标机的防地撞硬保底 (因为你在下方奖励结算里设定了 500m 告警)
+                        new_pos[2] = 500.0
+                        new_vel[2] = max(0.0, new_vel[2]) # 清除向下的速度分量，避免钻地
 
                 # ================= 核心修复：更新本地账本并强制洗白 PyBullet =================
                 trusted_states[agent]["pos"] = new_pos
@@ -920,6 +919,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 )
 
             # [角色 2] 目标机 (Evader) 奖励结算
+            '''
             if "evader_0" in actions and not terminations["evader_0"]:
                 # ================= Phase 1 打靶阶段简化 =================
                 # 目标机作为固定靶，不再计算复杂的规避奖励，防止梯度混乱并节省算力
@@ -927,73 +927,34 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 # =======================================================
             '''
             if "evader_0" in actions and not terminations["evader_0"]:
-                WARNING_RADIUS = 500.0  # 告警半径设置
+                WARNING_RADIUS = 1500.0  # 告警半径设置
                 
+                reward_E_survival = 0.5 * dt # 提高苟活底薪，鼓励多在天上待一秒是一秒
                 reward_E_escape = 0.0
-                reward_E_jinking = 0.0
-                reward_E_straight = 0.0
+                reward_E_spoofing = 0.0
                 
-                # 苟活奖励 (始终存在)
-                reward_E_survival = 0.1 * dt
-                
-                rel_pos_xy = new_evader_pos[0:2] - new_attacker_pos[0:2]
-                dist_xy = np.linalg.norm(rel_pos_xy)
-
-                if dist_xy <= WARNING_RADIUS: # 使用水平距离判断是否触发告警
-                    # --- 危险区域：激活逃逸与规避 ---
-                    # 1. 逃逸奖励
-                    reward_E_escape = micro_delta_dist * 15.0  
+                if current_micro_dist <= WARNING_RADIUS:
+                    # 1. 逃逸奖励：成功拉开距离给予奖励
+                    if micro_delta_dist > 0:
+                        reward_E_escape = micro_delta_dist * 20.0 
                     
-                    # 2. 角度破坏奖励 (Spoofing Reward)
-                    threat_penalty = 0.0
-                    if cos_ata_attacker > 0.5: # 敌机大致看向我 (夹角 < 60度)
-                        threat_penalty = - (cos_ata_attacker ** 2) * 2.0 * dt
-                    
-                    # 奖励项：鼓励诱导敌方进入大 HCA (航向交叉) 的剪刀机动状态
-                    # 如果双方在近距离呈大角度交叉 (cos_hca 接近 0 或负数)，说明规避有效
-                    hca_reward = 0.0
-                    if cos_hca < 0.2: # 航向差异明显，非同向伴飞
-                        hca_reward = (0.2 - cos_hca) * 1.5 * dt
-                        
-                    reward_E_jinking = threat_penalty + hca_reward
-
+                    # 2. 角度破坏 (Spoofing)：破坏攻击机的瞄准
+                    if cos_ata_attacker > 0.5: # 攻击机正看向我
+                        # 惩罚目标机被锁定，逼迫它做急转弯脱离攻击机视线
+                        reward_E_spoofing -= (cos_ata_attacker ** 2) * 5.0 * dt
                 else:
-                    # --- 安全区域：鼓励直线平飞 ---
-                    evader_action = int(actions["evader_0"])
-                    # BFM 动作库中：0=匀速直飞, 1=加速直飞, 2=减速直飞
-                    # 1. 动作级奖励：鼓励选择平飞 BFM
-                    # 0=匀速直飞, 1=加速直飞, 2=减速直飞
-                    if evader_action in [0, 1, 2]: 
-                        reward_E_straight += 1.0 * dt  # 提高奖励权重，明确告诉AI这是对的
-                    else:
-                        # 惩罚在安全距离乱做大过载或滚转机动
-                        reward_E_straight -= 0.5 * dt
+                    # 安全距离下，惩罚无意义的乱滚转 (节省动能)
+                    evader_rpy = new_evader_state[7:10]
+                    reward_E_spoofing -= abs(evader_rpy[0]) * 1.0 * dt
 
-                    # 2. 物理姿态级惩罚：逼迫飞机保持水平
-                    # 提取目标机当前的 Roll (滚转) 和 Pitch (俯仰) 角
-                    evader_rpy = new_evader_state[7:10] 
-                    roll = evader_rpy[0]
-                    pitch = evader_rpy[1]
-                    
-                    # 姿态越倾斜，扣分越多 (鼓励 Roll 和 Pitch 趋近于 0)
-                    attitude_penalty = (abs(roll) + abs(pitch)) * 0.5 * dt
-                    reward_E_straight -= attitude_penalty
-
-                    # 3. 垂直速度惩罚：替代原本僵硬的“绝对高度惩罚”
-                    # 只要飞机不往下掉，就不扣分。这能有效防止死亡俯冲。
-                    evader_vel_z = new_evader_state[10:13][2]
-                    if evader_vel_z < -2.0:  # 允许 2m/s 以内的微小掉高，超过则惩罚下坠率
-                        reward_E_straight -= abs(evader_vel_z) * 0.05 * dt
-
-                # 目标机软地板警告 
-                reward_E_ground_warning = 0.0
-                if new_evader_pos[2] < 300.0:
-                    reward_E_ground_warning = -(300.0 - new_evader_pos[2]) * 0.5 * dt
+                # 目标机防地撞与防飞离边界硬性惩罚 (让它留在交战空域)
+                reward_E_boundary = 0.0
+                if new_evader_pos[2] < 500.0:
+                    reward_E_boundary = -(500.0 - new_evader_pos[2]) * 0.5 * dt
+                elif new_evader_pos[2] > 4500.0:
+                    reward_E_boundary = -(new_evader_pos[2] - 4500.0) * 0.5 * dt
                         
-                # 单帧结算
-                total_rewards["evader_0"] += (reward_E_escape + reward_E_survival + reward_E_jinking + reward_E_straight + reward_E_ground_warning)
-
-                '''
+                total_rewards["evader_0"] += (reward_E_survival + reward_E_escape + reward_E_spoofing + reward_E_boundary)
             
             # 1. 动能撞击 / 击杀成功
             if new_dist < 50.0 and self.macro_step > 2: # 增加暖机帧保护
