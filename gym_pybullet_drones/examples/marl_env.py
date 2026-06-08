@@ -53,9 +53,9 @@ class Drone1v1MARLEnv(MultiAgentEnv):
         self.g = 9.81             # 重力加速度
 
         # --- 目标机(Evader)性能缩放系数 ---
-        self.EVADER_SPEED_COEFF = 0.625  # 速度系数 (400 * 0.625 = 250 m/s)
-        self.EVADER_G_COEFF = 0.555      # 过载系数 (9.0 * 0.555 ≈ 5.0 G)
-
+        self.EVADER_SPEED_COEFF = 0.50     # 400 * 0.50 = 200 m/s (约 0.6 马赫)
+        self.EVADER_G_COEFF = 0.333        # 9.0 * 0.333 ≈ 3.0 G (机动极其迟缓)
+        
         # 动作空间：离散的 13 种 BFM 动作
         self.action_spaces = {
             agent: gym.spaces.Discrete(13)
@@ -682,12 +682,12 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                         new_pos[2] = 1.0
                 else:
                     # ================= 目标机物理边界 (完全交由神经网络控制) =================
-                    if new_pos[2] > 5000.0:
-                        new_pos[2] = 5000.0
+                    if new_pos[2] > 4000.0:
+                        new_pos[2] = 4000.0
                         total_rewards[agent] -= 0.5 * dt  # 触碰天花板同样给点软惩罚
-                    elif new_pos[2] < 500.0:  
+                    elif new_pos[2] < 1200.0:  
                         # 目标机的防地撞硬保底 (因为你在下方奖励结算里设定了 500m 告警)
-                        new_pos[2] = 500.0
+                        new_pos[2] = 1200.0
                         new_vel[2] = max(0.0, new_vel[2]) # 清除向下的速度分量，避免钻地
 
                 # ================= 核心修复：更新本地账本并强制洗白 PyBullet =================
@@ -949,10 +949,10 @@ class Drone1v1MARLEnv(MultiAgentEnv):
 
                 # 目标机防地撞与防飞离边界硬性惩罚 (让它留在交战空域)
                 reward_E_boundary = 0.0
-                if new_evader_pos[2] < 500.0:
-                    reward_E_boundary = -(500.0 - new_evader_pos[2]) * 0.5 * dt
-                elif new_evader_pos[2] > 4500.0:
-                    reward_E_boundary = -(new_evader_pos[2] - 4500.0) * 0.5 * dt
+                if new_evader_pos[2] < 1200.0:
+                    reward_E_boundary = -(1200.0 - new_evader_pos[2]) * 0.5 * dt
+                elif new_evader_pos[2] > 4000.0:
+                    reward_E_boundary = -(new_evader_pos[2] - 4000.0) * 0.5 * dt
                         
                 total_rewards["evader_0"] += (reward_E_survival + reward_E_escape + reward_E_spoofing + reward_E_boundary)
             

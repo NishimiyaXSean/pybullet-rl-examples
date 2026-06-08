@@ -1,4 +1,10 @@
 import os
+
+# ================= 修复 Windows 独有的 OpenMP 冲突 =================
+os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
+os.environ['RAY_CHDIR_TO_TRIAL_DIR'] = '0'
+# ===================================================================
+
 import glob
 import re
 import matplotlib.pyplot as plt
@@ -57,7 +63,7 @@ def build_eval_algo():
 if __name__ == "__main__":
     # ================= 1. 配置路径 =================
     # 填入正在跑的，或者已经跑完的 MARL 训练文件夹路径
-    TARGET_RUN_DIR = "./marl_runs/mappo_run_0606_0923/checkpoints/checkpoint_best_iter_507" 
+    TARGET_RUN_DIR = os.path.abspath("./marl_runs/mappo_run_0606_1727")
     # ===============================================
 
     ray.init()
