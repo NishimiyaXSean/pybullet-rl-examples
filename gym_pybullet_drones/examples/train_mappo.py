@@ -163,7 +163,12 @@ if __name__ == "__main__":
                         
         # 广播给所有的 Worker 执行
         algo.env_runner_group.foreach_env_runner(apply_asymmetric_lr)
-        # =================================================================================
+
+        # ==================== 【关键补漏】 ====================
+        # 必须在主节点（Local Worker）上也执行一次！因为真正的参数更新发生在这里
+        if hasattr(algo.env_runner_group, "local_env_runner"):
+            apply_asymmetric_lr(algo.env_runner_group.local_env_runner)
+        # =======================================================
     else:
         print("未发现旧模型，将从随机初始化开始全新训练。")
 
@@ -296,7 +301,7 @@ if __name__ == "__main__":
             tb_writer.add_scalar("2_Combat_Rates/Out_of_Bounds", oob_rate * 100, real_iter)
             tb_writer.add_scalar("2_Combat_Rates/Timeout", timeout_rate * 100, real_iter)
             tb_writer.add_scalar("5_Network_Stats/Entropy", entropy, real_iter)
-            tb_writer.add_scalar("5_Network_Stats/Learning_Rate", CURRENT_LR, real_iter)
+            # tb_writer.add_scalar("5_Network_Stats/Learning_Rate", CURRENT_LR, real_iter)
             
             # ====================================================================
             # 植入实测与晋级循环
