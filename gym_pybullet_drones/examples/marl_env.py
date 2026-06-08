@@ -184,7 +184,10 @@ class Drone1v1MARLEnv(MultiAgentEnv):
 
         # 让目标机的高度以攻击机为基准，上下随机浮动 500 米
         # 这样攻击机有 50% 概率处于高位，50% 概率处于低位，必须学会全向俯仰机动！
-        evader_z = attacker_z + np.random.uniform(-500.0, 500.0)
+        raw_evader_z = attacker_z + np.random.uniform(-500.0, 500.0)
+        
+        # 【核心修复】：限制在 1600(软地板) 到 3600(软天花板) 的绝对安全区内
+        evader_z = np.clip(raw_evader_z, 1600.0, 3600.0) 
         self.evader_initial_z = evader_z
 
         # 组合成新的初始坐标数组
@@ -949,10 +952,21 @@ class Drone1v1MARLEnv(MultiAgentEnv):
 
                 # 目标机防地撞与防飞离边界硬性惩罚 (让它留在交战空域)
                 reward_E_boundary = 0.0
-                if new_evader_pos[2] < 1200.0:
-                    reward_E_boundary = -(1200.0 - new_evader_pos[2]) * 0.5 * dt
-                elif new_evader_pos[2] > 4000.0:
-                    reward_E_boundary = -(new_evader_pos[2] - 4000.0) * 0.5 * dt
+                # 设定一个 1600m 的软地板警告线 (物理硬地板在 1200m)
+                if new_evader_pos[2] < 1600.0:
+                    # 越靠近 1200m，惩罚呈指数级上升
+                    depth_ratio = (1600.0 - new_evader_pos[2]) / 400.0  # 比例 0.0 ~ 1.0
+                    reward_E_boundary -= (depth_ratio ** 2) * 5.0 * dt
+                    
+                    # 动态势能墙：如果在警告区内还往下掉，加重惩罚！
+                    vz_E = trusted_states["evader_0"]["vel"][2]
+                    if vz_E < -1.0:
+                        reward_E_boundary -= abs(vz_E) * 0.2 * dt
+
+                # 天花板同样提前设立软边界 (例如 3700m - 4000m)
+                elif new_evader_pos[2] > 3700.0:
+                    depth_ratio = (new_evader_pos[2] - 3700.0) / 300.0
+                    reward_E_boundary -= (depth_ratio ** 2) * 5.0 * dt
                         
                 total_rewards["evader_0"] += (reward_E_survival + reward_E_escape + reward_E_spoofing + reward_E_boundary)
             
@@ -997,7 +1011,10 @@ class Drone1v1MARLEnv(MultiAgentEnv):
             crash_occurred = False # 新增一个标志位
             for agent, state in zip(["attacker_0", "evader_0"], [new_attacker_state, new_evader_state]):
                 if agent in actions and not terminations[agent]: # 只有这个 agent 还在计分板上，才对它进行边界惩罚！
-                    if state[2] < 10:
+                    # 【核心修复】：为攻击机和目标机分别设置真实的死亡地板！
+                    death_floor = 10.0 if agent == "attacker_0" else 1210.0 # 目标机跌破 1210米 即判定坠毁
+                    
+                    if state[2] < death_floor:
                         total_rewards[agent] -= 2000.0
                         terminations[agent] = True
                         infos[agent]["reason"] = "ground_crash"

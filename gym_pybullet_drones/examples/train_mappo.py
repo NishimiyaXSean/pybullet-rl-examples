@@ -110,7 +110,8 @@ if __name__ == "__main__":
             model={"custom_model": "mappo_centralized_critic"},
             train_batch_size=8192,
             minibatch_size=1024,
-            lr=5e-5,
+            lr=1e-5,
+            lr_schedule=None, # 确保没有旧的 schedule 干扰
             entropy_coeff=0.01,
             clip_param=0.2, # PPO Actor 截断
             vf_clip_param=1000.0, # 大幅放宽 Critic 网络的截断，防止价值网络窒息
@@ -141,22 +142,28 @@ if __name__ == "__main__":
         print(f"正在恢复旧模型记忆: {OLD_CHECKPOINT}")
         algo.restore(OLD_CHECKPOINT)
 
-        # ==================== 新增：清除旧的优化器状态，防止维度冲突 ====================
-        print("正在清除优化器历史动量 (Amnesia Protocol)...")
-        def reset_optimizer_state(env_runner):
-            # 【修复】：循环清空双方大脑的优化器缓存！
-            for policy_id in ["policy_attacker", "policy_evader"]:
-                policy = env_runner.get_policy(policy_id)
-                if policy and hasattr(policy, "_optimizers"):
-                    for opt in policy._optimizers:
-                        # opt.state 是一个字典，里面存着 exp_avg 等历史动量。
-                        # 直接 clear() 清空它，PyTorch 会在下一步用新的 13 维权重自动重新初始化它！
-                        opt.state.clear()
+        # ==================== 修改：清空动量并强行注入非对称学习率 ====================
+        print("正在清空历史动量，并注入非对称学习率 (Attacker:1e-6, Evader:5e-5)...")
+        def apply_asymmetric_lr(env_runner):
+            # 1. 压制攻击机 (防止灾难性遗忘)
+            policy_A = env_runner.get_policy("policy_attacker")
+            if policy_A and hasattr(policy_A, "_optimizers"):
+                for opt in policy_A._optimizers:
+                    opt.state.clear() # 清空动量
+                    for param_group in opt.param_groups:
+                        param_group["lr"] = 1e-6  # 【极低学习率】
+
+            # 2. 激活目标机 (全速进化)
+            policy_E = env_runner.get_policy("policy_evader")
+            if policy_E and hasattr(policy_E, "_optimizers"):
+                for opt in policy_E._optimizers:
+                    opt.state.clear() # 清空动量
+                    for param_group in opt.param_groups:
+                        param_group["lr"] = 5e-5  # 【高学习率】
                         
-        # 利用 RLlib 的穿透机制，让所有并行的 Worker 都清空自己的优化器缓存
-        algo.env_runner_group.foreach_env_runner(reset_optimizer_state)
+        # 广播给所有的 Worker 执行
+        algo.env_runner_group.foreach_env_runner(apply_asymmetric_lr)
         # =================================================================================
-        
     else:
         print("未发现旧模型，将从随机初始化开始全新训练。")
 
@@ -186,11 +193,13 @@ if __name__ == "__main__":
     best_checkpoint_path = None    
     global_episodes = 0  # 全局回合计数器 
 
+    '''
     # ================= 新增：动态学习率控制变量 =================
     CURRENT_LR = 5e-5      # 初始学习率 (与 config 中的 lr 保持一致)
     MIN_LR = 5e-6          # 学习率下限 (十分之一)，防止模型彻底停止学习
     DECAY_FACTOR = 0.98    # 每次衰减系数 (胜率达标时，当前 LR * 0.98)
     # ============================================================
+    '''
 
     print("==================================")
     print("开始 MAPPO 多智能体 1v1 空战对抗训练！")
@@ -251,6 +260,8 @@ if __name__ == "__main__":
             # 提取 Entropy
             entropy = learner_stats.get("entropy", 0.0)
 
+            '''
+
             # ================= 新增：基于胜率的动态学习率衰减 =================
             # 当真实胜率突破 50%，且还没跌破下限时，开始温和衰减学习率
             if success_rate > 0.50 and CURRENT_LR > MIN_LR:
@@ -267,7 +278,8 @@ if __name__ == "__main__":
                 # 广播给所有的 Worker 进程
                 algo.env_runner_group.foreach_env_runner(set_lr)
             # =================================================================
-            
+            '''
+
             print(f"迭代 {real_iter:03d} | "
                   f"奖励(主/敌): {reward_A:6.1f} / {reward_E:6.1f} | "
                   f"本轮真实终局 -> 击杀:{success_rate*100:5.1f}% | 坠地:{crash_rate*100:5.1f}% | 越界:{oob_rate*100:5.1f}% | 超时:{timeout_rate*100:5.1f}% | "
