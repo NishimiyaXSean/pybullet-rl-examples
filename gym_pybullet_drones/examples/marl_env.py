@@ -185,7 +185,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
         # 让目标机的高度以攻击机为基准，上下随机浮动 500 米
         # 这样攻击机有 50% 概率处于高位，50% 概率处于低位，必须学会全向俯仰机动！
         raw_evader_z = attacker_z + np.random.uniform(-500.0, 500.0)
-        
+
         # 【核心修复】：限制在 1600(软地板) 到 3600(软天花板) 的绝对安全区内
         evader_z = np.clip(raw_evader_z, 1600.0, 3600.0) 
         self.evader_initial_z = evader_z
@@ -783,16 +783,19 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                     # 限制最大势能差额为 1000 米，防止无限爬升
                     reward_A_z_advantage = np.clip(dz, 0.0, 1000.0) * 0.002 * dt
                 elif dz < -100.0:
-                    # 【核心修复】：惩罚力度翻倍，且随着高度差扩大，惩罚越来越重
-                    # 距离目标下方越深，扣分越狠
-                    penalty_scale = np.clip(abs(dz) / 500.0, 1.0, 3.0) 
-                    reward_A_z_advantage = np.clip(dz, -1000.0, 0.0) * 0.008 * penalty_scale * dt
+                    # 【修复】目标在上方时，大幅增加下方惩罚，逼迫它拉机头爬升
+                    penalty_scale = np.clip(abs(dz) / 300.0, 1.0, 4.0) 
+                    reward_A_z_advantage -= abs(dz) * 0.02 * penalty_scale * dt
                 
                 reward_A_energy_loss = 0.0 
 
                 # 【新增防悬停机制】：如果速度跌到谷底（接近失速），严厉惩罚！
                 current_v = np.linalg.norm(trusted_states["attacker_0"]["vel"])
-                if current_v < 150.0:
+                vz_A = trusted_states["attacker_0"]["vel"][2]
+                
+                # 【核心修复】：免除积极爬升时的低速惩罚！(动能换势能是合理的)
+                # 只有当速度极低，且飞机没有在垂直向上爬升时，才算作“危险低速”
+                if current_v < 150.0 and vz_A < 10.0:
                     reward_A_energy_loss -= (150.0 - current_v) * 0.5 * dt
 
                 # 攻击机软地板警告 
@@ -939,7 +942,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 if current_micro_dist <= WARNING_RADIUS:
                     # 1. 逃逸奖励：成功拉开距离给予奖励
                     if micro_delta_dist > 0:
-                        reward_E_escape = micro_delta_dist * 20.0 
+                        reward_E_escape = micro_delta_dist * 2.0 
                     
                     # 2. 角度破坏 (Spoofing)：破坏攻击机的瞄准
                     if cos_ata_attacker > 0.5: # 攻击机正看向我
@@ -956,7 +959,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 if new_evader_pos[2] < 1600.0:
                     # 越靠近 1200m，惩罚呈指数级上升
                     depth_ratio = (1600.0 - new_evader_pos[2]) / 400.0  # 比例 0.0 ~ 1.0
-                    reward_E_boundary -= (depth_ratio ** 2) * 5.0 * dt
+                    reward_E_boundary -= (depth_ratio ** 2) * 20.0 * dt
                     
                     # 动态势能墙：如果在警告区内还往下掉，加重惩罚！
                     vz_E = trusted_states["evader_0"]["vel"][2]
@@ -966,7 +969,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 # 天花板同样提前设立软边界 (例如 3700m - 4000m)
                 elif new_evader_pos[2] > 3700.0:
                     depth_ratio = (new_evader_pos[2] - 3700.0) / 300.0
-                    reward_E_boundary -= (depth_ratio ** 2) * 5.0 * dt
+                    reward_E_boundary -= (depth_ratio ** 2) * 20.0 * dt
                         
                 total_rewards["evader_0"] += (reward_E_survival + reward_E_escape + reward_E_spoofing + reward_E_boundary)
             

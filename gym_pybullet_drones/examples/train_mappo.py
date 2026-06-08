@@ -151,7 +151,7 @@ if __name__ == "__main__":
                 for opt in policy_A._optimizers:
                     opt.state.clear() # 清空动量
                     for param_group in opt.param_groups:
-                        param_group["lr"] = 1e-6  # 【极低学习率】
+                        param_group["lr"] = 1e-5  
 
             # 2. 激活目标机 (全速进化)
             policy_E = env_runner.get_policy("policy_evader")
@@ -159,7 +159,7 @@ if __name__ == "__main__":
                 for opt in policy_E._optimizers:
                     opt.state.clear() # 清空动量
                     for param_group in opt.param_groups:
-                        param_group["lr"] = 5e-5  # 【高学习率】
+                        param_group["lr"] = 5e-5  
                         
         # 广播给所有的 Worker 执行
         algo.env_runner_group.foreach_env_runner(apply_asymmetric_lr)
