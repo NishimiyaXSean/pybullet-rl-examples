@@ -193,8 +193,8 @@ class Drone1v1MARLEnv(MultiAgentEnv):
         # 这样攻击机有 50% 概率处于高位，50% 概率处于低位，必须学会全向俯仰机动！
         raw_evader_z = attacker_z + np.random.uniform(-500.0, 500.0)
 
-        # 【核心修复】：限制在 1600(软地板) 到 3600(软天花板) 的绝对安全区内
-        evader_z = np.clip(raw_evader_z, 1600.0, 3600.0) 
+        # 【修改】：给目标机更多的向下生成空间
+        evader_z = np.clip(raw_evader_z, 1000.0, 3600.0) 
         self.evader_initial_z = evader_z
 
         # 组合成新的初始坐标数组
@@ -597,7 +597,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 '''
 
                 # GPWS 近地警告最高优先级覆盖
-                if pos[2] < 800.0 and vel[2] < -5.0:   # 如果低于 800 米，且具有超过 5m/s 的下坠速度，强制接管
+                if pos[2] < 300.0 and vel[2] < -5.0:   # 如果低于 300 米，且具有超过 5m/s 的下坠速度，强制接管
                     n_n_cmd = current_max_g  # 强制给足最大过载拉起
                     target_mu = 0.0          # 强制改平
 
@@ -702,10 +702,6 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                     if new_pos[2] > 4000.0:
                         new_pos[2] = 4000.0
                         total_rewards[agent] -= 0.5 * dt  # 触碰天花板同样给点软惩罚
-                    elif new_pos[2] < 1200.0:  
-                        # 目标机的防地撞硬保底 (因为你在下方奖励结算里设定了 500m 告警)
-                        new_pos[2] = 1200.0
-                        new_vel[2] = max(0.0, new_vel[2]) # 清除向下的速度分量，避免钻地
 
                 # ================= 核心修复：更新本地账本并强制洗白 PyBullet =================
                 trusted_states[agent]["pos"] = new_pos
@@ -792,10 +788,10 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 reward_A_time = -(0.5 + time_ratio * 2.0) * dt
 
                 reward_A_z_advantage = 0.0
-                # 【核心修改】：只有当机头大致朝向敌方 (进攻态势) 时，高度优势才给分！
-                if dz > 50.0 and cos_ata_attacker > -0.2:
-                    # 限制最大势能差额为 1000 米，防止无限爬升
-                    reward_A_z_advantage = np.clip(dz, 0.0, 1000.0) * 0.002 * dt
+                # 【优化】：必须在“积极进攻（距离正在拉近）”且“机头对准目标（前半球）”时，才给予势能奖励。
+                if dz > 50.0 and cos_ata_attacker > 0.5 and micro_delta_dist < 0:
+                    # 降低低保权重，逼迫其寻求击杀
+                    reward_A_z_advantage = np.clip(dz, 0.0, 1000.0) * 0.001 * dt
                 elif dz < -100.0:
                     # 【修复】目标在上方时，大幅增加下方惩罚，逼迫它拉机头爬升
                     penalty_scale = np.clip(abs(dz) / 300.0, 1.0, 4.0) 
@@ -814,9 +810,9 @@ class Drone1v1MARLEnv(MultiAgentEnv):
 
                 # 攻击机软地板警告 
                 reward_A_ground_warning = 0.0
-                if new_attacker_pos[2] < 500.0:  
+                if new_attacker_pos[2] < 200.0:  
                     # 高度越低，惩罚呈指数级上升
-                    depth_ratio = (500.0 - new_attacker_pos[2]) / 500.0
+                    depth_ratio = (200.0 - new_attacker_pos[2]) / 200.0
                     reward_A_ground_warning = -(depth_ratio ** 2) * 5.0 * dt
 
                     # 提取当前 Z 轴速度 (垂直速度)
@@ -859,11 +855,9 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                     # === 新增：末端等高约束 (共面惩罚) ===
                     # 将判定距离从 1500 米缩短到 800 米（进入格斗圈才考核高度）
                     if new_dist < 800.0:
-                        # 容忍 150 米的高度差（战斗机合理的截获高度窗口）
-                        z_error = max(0.0, abs(dz) - 150.0)
-                        
-                        # 降低高度差导致的惩罚系数上限 (最大只打 7 折，不要打 5 折)
-                        z_penalty_factor = np.clip(z_error / 800.0, 0.0, 0.3)
+                        # 扩大容差到 300 米，最大惩罚削弱到仅打 9 折
+                        z_error = max(0.0, abs(dz) - 300.0)
+                        z_penalty_factor = np.clip(z_error / 1000.0, 0.0, 0.1)
                         
                         # 结合你之前的防摸鱼机制：
                         if micro_delta_dist < 0:
@@ -921,10 +915,9 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                     
                     # 当进入末端抵近阶段 (400m 以内) 时，启动高精度的“动能撞击/导弹引导”逻辑
                     if new_dist <= TERMINAL_RADIUS: 
-                        # 引入水平冲刺系数：避免主机从天顶垂直“砸”向目标
-                        z_alignment_factor = np.clip((200.0 - abs(dz)) / 200.0, 0.0, 1.0)
-                        # 额外叠加末端冲刺大额奖励
-                        reward_A_ramming += closing_speed * 0.1 * dt * z_alignment_factor
+                        # 【优化】：彻底移除 z_alignment_factor
+                        # 鼓励包含垂直俯冲在内的所有全向 3D 动能撞击
+                        reward_A_ramming += closing_speed * 0.15 * dt
                 # =========================================================================
                               
                 # 单帧结算
@@ -967,10 +960,10 @@ class Drone1v1MARLEnv(MultiAgentEnv):
 
                 # 目标机防地撞与防飞离边界硬性惩罚 (让它留在交战空域)
                 reward_E_boundary = 0.0
-                # 设定一个 1600m 的软地板警告线 (物理硬地板在 1200m)
-                if new_evader_pos[2] < 1600.0:
-                    # 越靠近 1200m，惩罚呈指数级上升
-                    depth_ratio = (1600.0 - new_evader_pos[2]) / 400.0  # 比例 0.0 ~ 1.0
+                # 设定一个 1000m 的软地板警告线 (物理硬地板在 600m)
+                if new_evader_pos[2] < 1000.0:
+                    # 越靠近 600m，惩罚呈指数级上升
+                    depth_ratio = (1000.0 - new_evader_pos[2]) / 400.0  # 比例 0.0 ~ 1.0
                     reward_E_boundary -= (depth_ratio ** 2) * 20.0 * dt
                     
                     # 动态势能墙：如果在警告区内还往下掉，加重惩罚！
@@ -1026,8 +1019,8 @@ class Drone1v1MARLEnv(MultiAgentEnv):
             crash_occurred = False # 新增一个标志位
             for agent, state in zip(["attacker_0", "evader_0"], [new_attacker_state, new_evader_state]):
                 if agent in actions and not terminations[agent]: # 只有这个 agent 还在计分板上，才对它进行边界惩罚！
-                    # 【核心修复】：为攻击机和目标机分别设置真实的死亡地板！
-                    death_floor = 10.0 if agent == "attacker_0" else 1195.0 # 目标机跌破 1195米 即判定坠毁
+                    # 【修改】：目标机跌破 595 米即判定坠毁
+                    death_floor = 10.0 if agent == "attacker_0" else 595.0
                     
                     if state[2] < death_floor:
                         total_rewards[agent] -= 2000.0
