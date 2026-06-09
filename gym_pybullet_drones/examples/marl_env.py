@@ -555,6 +555,15 @@ class Drone1v1MARLEnv(MultiAgentEnv):
 
                 # 3. 离散动作解包 (BFM 指令)
                 action_idx = int(actions.get(agent, 0))   # 安全解包，哪怕上层没传 evader 的动作，默认给 0 (匀速直飞)
+                
+                # ================= 新增：目标机硬性动作接管 =================
+                # 如果是目标机，且当前距离大于告警半径，强行剥夺 AI 的控制权
+                WARNING_RADIUS = 1500.0
+                if agent == "evader_0" and current_micro_dist > WARNING_RADIUS:
+                    # 强制替换为动作 0 (匀速直飞：1G法向过载，0滚转，0加减速)
+                    action_idx = 0
+                # ============================================================
+
                 n_x_cmd, n_n_cmd, target_mu = self.bfm_action_mapping[action_idx]
 
                 '''
@@ -949,9 +958,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                         # 惩罚目标机被锁定，逼迫它做急转弯脱离攻击机视线
                         reward_E_spoofing -= (cos_ata_attacker ** 2) * 5.0 * dt
                 else:
-                    # 安全距离下，惩罚无意义的乱滚转 (节省动能)
-                    evader_rpy = new_evader_state[7:10]
-                    reward_E_spoofing -= abs(evader_rpy[0]) * 1.0 * dt
+                    pass
 
                 # 目标机防地撞与防飞离边界硬性惩罚 (让它留在交战空域)
                 reward_E_boundary = 0.0
