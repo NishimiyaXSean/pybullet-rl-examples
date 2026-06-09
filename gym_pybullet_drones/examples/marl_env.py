@@ -209,39 +209,38 @@ class Drone1v1MARLEnv(MultiAgentEnv):
         # 重置底层物理引擎
         raw_obs, _ = self.pyb_env.reset()
 
-        initial_speed = 150.0  # 设定初始空速为 150 m/s (约 540 km/h)
+        # 动态获取当前 Stage 下目标机被允许的极限速度
+        evader_max_speed = self.MAX_SPEED * self.EVADER_SPEED_COEFF
 
         # 替换 reset 函数中原本的初始姿态和速度赋值：
         for i, agent in enumerate(self.agents):
             initial_pos = new_init_xyzs[i]
             pyb_id = self.pyb_env.DRONE_IDS[i] if hasattr(self.pyb_env, 'DRONE_IDS') else self.pyb_env.drone_ids[i]
             
-            # 修复：计算指向原点 (0,0) 的偏航角
+            # 计算指向原点 (0,0) 的基础偏航角
+            dx = -initial_pos[0]
+            dy = -initial_pos[1]
+            base_yaw = np.arctan2(dy, dx)
+            
             if agent == "attacker_0":
-                dx = -initial_pos[0]
-                dy = -initial_pos[1]
-                yaw = np.arctan2(dy, dx)
-                self.attacker_init_yaw = yaw # 记录一下攻击机的朝向
-                current_init_speed = 150.0  # 主机初始速度
+                yaw = base_yaw
+                self.attacker_init_yaw = yaw      # 记录攻击机朝向基准
+                current_init_speed = 150.0        # 攻击机初始速度维持 150 m/s
             else:         
-                # ================= 课程学习 Stage 1.5：全向直线拦截 =================
-                # 引入四种经典的战术初始态势，并加入 ±15度 的随机扰动防止过拟合
-                
-                # 0:        纯尾追 (Tail-on)
-                # np.pi/2:  左侧向交叉 (Left-Beam)
-                # -np.pi/2: 右侧向交叉 (Right-Beam)
-                # np.pi:    迎头对冲 (Head-on)
+                # ================= 课程学习：全向战术拦截态势 =================
+                # 0: 纯尾追 | ±np.pi/2: 侧向交叉 | np.pi: 迎头对冲
                 tactical_offset = np.random.choice([0.0, np.pi/2, -np.pi/2, np.pi])
                 
-                # 添加随机扰动 (约 ±15 度)
+                # 添加随机扰动 (约 ±15 度)，防止网络死记硬背
                 noise = np.random.uniform(-np.pi/12, np.pi/12)
                 yaw = self.attacker_init_yaw + tactical_offset + noise
-                current_init_speed = 250.0  # 【修复】目标机直接以 250m/s 极速出生！
-                # ====================================================================
+                
+                # 【关键修复】目标机不再硬编码 250m/s，而是使用当前阶段的极速
+                current_init_speed = evader_max_speed 
+                # ================================================================
             
-
-            # 根据真实偏航角分解 X 和 Y 方向的初始速度
-            init_vel = [initial_speed * np.cos(yaw), initial_speed * np.sin(yaw), 0.0]
+            # 【关键修复】使用 current_init_speed 而不是 initial_speed
+            init_vel = [current_init_speed * np.cos(yaw), current_init_speed * np.sin(yaw), 0.0]
             init_quat = p.getQuaternionFromEuler([0, 0, yaw])
             
             p.resetBasePositionAndOrientation(pyb_id, initial_pos, init_quat, physicsClientId=self.pyb_env.CLIENT)
@@ -1028,7 +1027,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
             for agent, state in zip(["attacker_0", "evader_0"], [new_attacker_state, new_evader_state]):
                 if agent in actions and not terminations[agent]: # 只有这个 agent 还在计分板上，才对它进行边界惩罚！
                     # 【核心修复】：为攻击机和目标机分别设置真实的死亡地板！
-                    death_floor = 10.0 if agent == "attacker_0" else 1210.0 # 目标机跌破 1210米 即判定坠毁
+                    death_floor = 10.0 if agent == "attacker_0" else 1195.0 # 目标机跌破 1195米 即判定坠毁
                     
                     if state[2] < death_floor:
                         total_rewards[agent] -= 2000.0

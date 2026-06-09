@@ -142,8 +142,7 @@ if __name__ == "__main__":
         print(f"正在恢复旧模型记忆: {OLD_CHECKPOINT}")
         algo.restore(OLD_CHECKPOINT)
 
-        # ==================== 修改：清空动量并强行注入非对称学习率 ====================
-        print("正在清空历史动量，并注入非对称学习率...")
+        print("正在清空历史动量，并注入新阶段均衡学习率...")
         def apply_asymmetric_lr(env_runner):
             policy_A = env_runner.get_policy("policy_attacker")
             if policy_A and hasattr(policy_A, "_optimizers"):
