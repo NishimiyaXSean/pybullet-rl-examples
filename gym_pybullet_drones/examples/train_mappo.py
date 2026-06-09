@@ -136,22 +136,21 @@ if __name__ == "__main__":
     print("="*45 + "\n")
 
     # 加载旧模型以继续训练
-    OLD_CHECKPOINT = os.path.abspath("./marl_runs/mappo_run_0606_0923/checkpoints/checkpoint_best_iter_507" )
+    OLD_CHECKPOINT = os.path.abspath("./marl_runs/mappo_run_0609_1021/checkpoints/checkpoint_best_iter_541" )
 
     if os.path.exists(OLD_CHECKPOINT):
         print(f"正在恢复旧模型记忆: {OLD_CHECKPOINT}")
         algo.restore(OLD_CHECKPOINT)
 
         # ==================== 修改：清空动量并强行注入非对称学习率 ====================
-        print("正在清空历史动量，并注入非对称学习率 (Attacker:1e-6, Evader:5e-5)...")
+        print("正在清空历史动量，并注入非对称学习率...")
         def apply_asymmetric_lr(env_runner):
-            # 1. 压制攻击机 (防止灾难性遗忘)
             policy_A = env_runner.get_policy("policy_attacker")
             if policy_A and hasattr(policy_A, "_optimizers"):
                 for opt in policy_A._optimizers:
                     opt.state.clear() # 清空动量
                     for param_group in opt.param_groups:
-                        param_group["lr"] = 1e-5  
+                        param_group["lr"] = 2e-5   # 攻击机略微提高，以适应更狡猾的目标
 
             # 2. 激活目标机 (全速进化)
             policy_E = env_runner.get_policy("policy_evader")
@@ -159,7 +158,7 @@ if __name__ == "__main__":
                 for opt in policy_E._optimizers:
                     opt.state.clear() # 清空动量
                     for param_group in opt.param_groups:
-                        param_group["lr"] = 5e-5  
+                        param_group["lr"] = 2e-5   # 目标机下调学习率，防止在广阔的告警空间中乱飞导致崩溃
                         
         # 广播给所有的 Worker 执行
         algo.env_runner_group.foreach_env_runner(apply_asymmetric_lr)
@@ -179,10 +178,10 @@ if __name__ == "__main__":
     # 初始化测试环境与全局课程变量
     # ====================================================================
     TEST_ENV = Drone1v1MARLEnv(gui=False)
-    CURRENT_STAGE = 3          # 假设你当前是从 Stage 2 继续训练
+    CURRENT_STAGE = 1          
     EVAL_INTERVAL = 10         # 每训练 10 次迭代，进行一次确定性压测
     TEST_EPISODES = 50         # 每次压测 50 局
-    TARGET_SUCCESS_RATE = 0.75 # 晋级阈值：实测胜率达到 75% 升阶
+    TARGET_SUCCESS_RATE = 0.7  # 晋级阈值：实测胜率达到 70% 升阶
 
     # 初始化时强制对齐全军的 Stage
     algo.env_runner_group.foreach_env(

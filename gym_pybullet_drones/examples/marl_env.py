@@ -51,10 +51,6 @@ class Drone1v1MARLEnv(MultiAgentEnv):
         self.MAX_SPEED = 400.0    # 绝对最大平飞速度 (约 1.2 马赫)
         self.STALL_SPEED = 60.0   # 基础失速速度
         self.g = 9.81             # 重力加速度
-
-        # --- 目标机(Evader)性能缩放系数 ---
-        self.EVADER_SPEED_COEFF = 0.50     # 400 * 0.50 = 200 m/s (约 0.6 马赫)
-        self.EVADER_G_COEFF = 0.333        # 9.0 * 0.333 ≈ 3.0 G (机动极其迟缓)
         
         # 动作空间：离散的 13 种 BFM 动作
         self.action_spaces = {
@@ -120,17 +116,28 @@ class Drone1v1MARLEnv(MultiAgentEnv):
     def _update_curriculum_bounds(self):
         """定义每个难度阶段的具体出生范围"""
         if self.curriculum_stage == 1:
-            # Stage 1: 近距超视距 (新手村)
+            # Stage 1: 新手村 (限制极大的固定靶/呆板靶)
             self.d_min, self.d_max = 600.0, 1000.0
             self.z_min, self.z_max = 1500.0, 2000.0
+            self.EVADER_SPEED_COEFF = 0.50     # 约 0.6 马赫
+            self.EVADER_G_COEFF = 0.333        # 约 3.0 G
+            self.warning_radius = 1500.0       # 极小的告警圈
+            
         elif self.curriculum_stage == 2:
-            # Stage 2: 中距拉锯
+            # Stage 2: 中距拉锯 (解禁部分机动能力与战术视野)
             self.d_min, self.d_max = 1000.0, 1500.0
             self.z_min, self.z_max = 1800.0, 2500.0
+            self.EVADER_SPEED_COEFF = 0.65     # 提速至约 0.8 马赫
+            self.EVADER_G_COEFF = 0.55         # 解禁至约 5.0 G (允许中等烈度规避)
+            self.warning_radius = 3000.0       # 告警半径翻倍，提前开启规避动作
+            
         else:
-            # Stage 3: 长程高空对决 (毕业期)
+            # Stage 3: 长程高空对决 (毕业期：近乎全对称的生死斗)
             self.d_min, self.d_max = 1500.0, 2500.0
             self.z_min, self.z_max = 2200.0, 3200.0
+            self.EVADER_SPEED_COEFF = 0.85     # 极其接近主机的速度
+            self.EVADER_G_COEFF = 0.85         # 极其接近主机的机动性
+            self.warning_radius = 10000.0      # 相当于全图告警，开局即处于博弈状态
     def _compute_global_state(self):
         """
         为 MAPPO 的 Critic 提取全知全能的全局状态 (Global State)
@@ -558,8 +565,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 
                 # ================= 新增：目标机硬性动作接管 =================
                 # 如果是目标机，且当前距离大于告警半径，强行剥夺 AI 的控制权
-                WARNING_RADIUS = 1500.0
-                if agent == "evader_0" and current_micro_dist > WARNING_RADIUS:
+                if agent == "evader_0" and current_micro_dist > self.warning_radius:
                     # 强制替换为动作 0 (匀速直飞：1G法向过载，0滚转，0加减速)
                     action_idx = 0
                 # ============================================================
@@ -948,7 +954,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 reward_E_escape = 0.0
                 reward_E_spoofing = 0.0
                 
-                if current_micro_dist <= WARNING_RADIUS:
+                if current_micro_dist <= self.warning_radius:
                     # 1. 逃逸奖励：成功拉开距离给予奖励
                     if micro_delta_dist > 0:
                         reward_E_escape = micro_delta_dist * 2.0 
