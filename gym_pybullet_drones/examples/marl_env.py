@@ -596,10 +596,15 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                         target_mu = 0.0
                 '''
 
+                # ================= 核心修复：分化 GPWS 触发高度 =================
+                # 主机在 300m 极低空拉起，而目标机的死亡线是 595m，必须在 800m 提前拉起
+                gpws_trigger_alt = 300.0 if agent == "attacker_0" else 800.0
+                
                 # GPWS 近地警告最高优先级覆盖
-                if pos[2] < 300.0 and vel[2] < -5.0:   # 如果低于 300 米，且具有超过 5m/s 的下坠速度，强制接管
+                if pos[2] < gpws_trigger_alt and vel[2] < -5.0:   
                     n_n_cmd = current_max_g  # 强制给足最大过载拉起
                     target_mu = 0.0          # 强制改平
+                # ================================================================
 
                 # 4. === 核心：物理平滑过渡机制 (一阶惯性延迟) ===
                 # tau_g 是飞机的过载建立时间常数 (秒)。0.4 秒意味着指令下达后，约 0.4 秒达到目标 G 值的 63%
@@ -964,12 +969,14 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 if new_evader_pos[2] < 1000.0:
                     # 越靠近 600m，惩罚呈指数级上升
                     depth_ratio = (1000.0 - new_evader_pos[2]) / 400.0  # 比例 0.0 ~ 1.0
-                    reward_E_boundary -= (depth_ratio ** 2) * 20.0 * dt
+                    
+                    # 【核心修改 1】：将基础惩罚从 20.0 暴增到 100.0，让它一旦跌破 1000m 就痛不欲生
+                    reward_E_boundary -= (depth_ratio ** 2) * 100.0 * dt
                     
                     # 动态势能墙：如果在警告区内还往下掉，加重惩罚！
                     vz_E = trusted_states["evader_0"]["vel"][2]
                     if vz_E < -1.0:
-                        reward_E_boundary -= abs(vz_E) * 0.2 * dt
+                        reward_E_boundary -= abs(vz_E) * 3.0 * dt
 
                 # 天花板同样提前设立软边界 (例如 3700m - 4000m)
                 elif new_evader_pos[2] > 3700.0:
@@ -1023,10 +1030,12 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                     death_floor = 10.0 if agent == "attacker_0" else 595.0
                     
                     if state[2] < death_floor:
-                        total_rewards[agent] -= 2000.0
+                        crash_penalty = 2000.0 if agent == "attacker_0" else 5000.0
+                        total_rewards[agent] -= crash_penalty
+                        
                         terminations[agent] = True
                         infos[agent]["reason"] = "ground_crash"
-                        crash_occurred = True 
+                        crash_occurred = True
                     elif state[2] > 4900.0:
                         total_rewards[agent] -= 2000.0
                         terminations[agent] = True
