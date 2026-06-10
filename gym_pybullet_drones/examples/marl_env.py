@@ -857,20 +857,15 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                     if cos_ata_attacker > 0.866: # 进入前 30 度 (高阶锁定)
                         base_ata_reward += 2.0 * dt
                     
-                    # === 新增：末端等高约束 (共面惩罚) ===
-                    # 将判定距离从 1500 米缩短到 800 米（进入格斗圈才考核高度）
-                    if new_dist < 800.0:
-                        # 扩大容差到 300 米，最大惩罚削弱到仅打 9 折
-                        z_error = max(0.0, abs(dz) - 300.0)
-                        z_penalty_factor = np.clip(z_error / 1000.0, 0.0, 0.1)
+                    # 末端等高约束 (共面惩罚)
+                    if new_dist < self.warning_radius:
+                        # 【修改】：容差缩小到 100 米，高度误差大于 100 米就开始严厉打折
+                        z_error = max(0.0, abs(dz) - 100.0)
+                        # 【修改】：一旦高度差超过 500 米，跟踪奖励直接归零 (1.0 惩罚系数)
+                        z_penalty_factor = np.clip(z_error / 500.0, 0.0, 1.0)
                         
-                        # 结合你之前的防摸鱼机制：
                         if micro_delta_dist < 0:
-                            # 拉近距离时：获得奖励，但要扣除高度不一致的惩罚
                             reward_A_tracking += base_ata_reward * (1.0 - z_penalty_factor)
-                        else:
-                            # 没拉近距离时：只给 1 折
-                            reward_A_tracking += base_ata_reward * 0.1
                     else:                  
                         # 远距离时，不在乎高度差，全额给分
                         if micro_delta_dist < 0:
@@ -945,8 +940,7 @@ class Drone1v1MARLEnv(MultiAgentEnv):
                 # =======================================================
             '''
             if "evader_0" in actions and not terminations["evader_0"]:
-                WARNING_RADIUS = 1500.0  # 告警半径设置
-                
+
                 reward_E_survival = 0.5 * dt # 提高苟活底薪，鼓励多在天上待一秒是一秒
                 reward_E_escape = 0.0
                 reward_E_spoofing = 0.0
@@ -987,8 +981,8 @@ class Drone1v1MARLEnv(MultiAgentEnv):
             
             # 1. 动能撞击 / 击杀成功
             if new_dist < 50.0 and self.macro_step > 2: # 增加暖机帧保护
-                if not terminations["attacker_0"]: total_rewards["attacker_0"] += 2000.0
-                if not terminations["evader_0"]: total_rewards["evader_0"] -= 2000.0
+                if not terminations["attacker_0"]: total_rewards["attacker_0"] += 5000.0
+                if not terminations["evader_0"]: total_rewards["evader_0"] -= 5000.0
                 terminations["attacker_0"] = True
                 terminations["evader_0"] = True
 
@@ -1004,10 +998,9 @@ class Drone1v1MARLEnv(MultiAgentEnv):
             elif new_dist <= self.cpa_radius and raw_micro_delta > 0 and self.macro_step > 2:
                 miss_distance = current_micro_dist
 
-                # 【奖励修正】：原版的平方衰减会导致 280m 擦边只给十几分。
-                # 现改为：只要进圈触发近炸，保底给予 1000 分，距离越近额外奖励越高（最高再加 1000 分）
+                # 保底给予 2000 分，距离越近额外奖励越高（最高再加 3000 分）
                 linear_ratio = np.clip((self.cpa_radius - miss_distance) / (self.cpa_radius - 50.0), 0.0, 1.0)
-                reward_terminal = 1000.0 + 1000.0 * linear_ratio
+                reward_terminal = 2000.0 + 3000.0 * linear_ratio
                 
                 # 双方进行分数结算 (零和博弈)
                 if "attacker_0" in total_rewards and not terminations["attacker_0"]: total_rewards["attacker_0"] += reward_terminal
@@ -1082,11 +1075,11 @@ class Drone1v1MARLEnv(MultiAgentEnv):
 
             # 如果演习结束，且攻击机既没有坠毁也没有击杀（即苟活到了最后），给予巨额惩罚
             if not terminations.get("attacker_0", True) and "attacker_0" in total_rewards:
-                total_rewards["attacker_0"] -= 500.0  
+                total_rewards["attacker_0"] -= 2000.0  
                 
             # 对应的，目标机成功拖延时间活到了最后，任务圆满完成，给予巨额奖励
             if not terminations.get("evader_0", True) and "evader_0" in total_rewards:
-                total_rewards["evader_0"] += 30.0
+                total_rewards["evader_0"] += 500.0
         
         global_state_array = self._compute_global_state()
         observations = {} # 计算最新的观测值

@@ -136,7 +136,7 @@ if __name__ == "__main__":
     print("="*45 + "\n")
 
     # 加载旧模型以继续训练
-    OLD_CHECKPOINT = os.path.abspath("./marl_runs/mappo_run_0609_1021/checkpoints/checkpoint_best_iter_541" )
+    OLD_CHECKPOINT = os.path.abspath("./marl_runs/mappo_run_0609_2059/checkpoints/checkpoint_best_iter_915" )
 
     if os.path.exists(OLD_CHECKPOINT):
         print(f"正在恢复旧模型记忆: {OLD_CHECKPOINT}")

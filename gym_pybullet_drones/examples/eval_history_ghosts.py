@@ -63,7 +63,7 @@ def build_eval_algo():
 if __name__ == "__main__":
     # ================= 1. 配置路径 =================
     # 填入正在跑的，或者已经跑完的 MARL 训练文件夹路径
-    TARGET_RUN_DIR = os.path.abspath("./marl_runs/mappo_run_0606_1727")
+    TARGET_RUN_DIR = os.path.abspath("./marl_runs/mappo_run_0609_2059")
     # ===============================================
 
     ray.init()
@@ -94,7 +94,7 @@ if __name__ == "__main__":
     algo_ghost = build_eval_algo()
 
     # ================= 3. 开始跨代对抗测试 =================
-    TEST_GAMES_PER_GHOST = 30 # 每个历史版本打 30 局
+    TEST_GAMES_PER_GHOST = 20 # 每个历史版本打 20 局
     eval_env = env_creator({})
     
     results_x_iters = []
