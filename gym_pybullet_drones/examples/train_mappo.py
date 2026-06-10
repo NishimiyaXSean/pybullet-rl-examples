@@ -136,7 +136,7 @@ if __name__ == "__main__":
     print("="*45 + "\n")
 
     # 加载旧模型以继续训练
-    OLD_CHECKPOINT = os.path.abspath("./marl_runs/mappo_run_0609_2059/checkpoints/checkpoint_best_iter_915" )
+    OLD_CHECKPOINT = os.path.abspath("./marl_runs/mappo_run_0610_1346/checkpoints/checkpoint_best_iter_1325" )
 
     if os.path.exists(OLD_CHECKPOINT):
         print(f"正在恢复旧模型记忆: {OLD_CHECKPOINT}")
@@ -302,13 +302,14 @@ if __name__ == "__main__":
             # tb_writer.add_scalar("5_Network_Stats/Learning_Rate", CURRENT_LR, real_iter)
             
             # ====================================================================
-            # 植入实测与晋级循环
+            # 植入实测与晋级循环（修复版：基于标准定标靶考核）
             # ====================================================================
-            is_just_upgraded = False  # 【新增】初始化拦截标识
+            is_just_upgraded = False  
 
             if (i + 1) % EVAL_INTERVAL == 0:
                 print(f"\n{'='*45}")
-                print(f"正在进行 Stage {CURRENT_STAGE} 确定性高压测试 ({TEST_EPISODES} 局)...")
+                # 【修改】明确提示：使用标准阶段定标靶进行绝对能力考核
+                print(f"正在进行 Stage {CURRENT_STAGE} 标准定标高压测试 ({TEST_EPISODES} 局)...")
                 
                 success_count = 0
                 for _ in range(TEST_EPISODES):
@@ -318,13 +319,23 @@ if __name__ == "__main__":
                     final_reason = "timeout"
                     
                     while not (terminated["__all__"] or truncated["__all__"]):
-                        # 开启 explore=False 关闭高斯噪声，获取确定性最优动作
+                        # 1. 攻击机拿出当前最新、最强的确定性大脑去应试
                         action_A = algo.compute_single_action(obs["attacker_0"], policy_id="policy_attacker", explore=False)
                         
-                        # 构建 actions 字典
+                        # 2. 【核心破局修改】：构建客观的“期末考试标准靶”
                         actions = {"attacker_0": action_A}
                         if "evader_0" in obs:
-                            action_E = algo.compute_single_action(obs["evader_0"], policy_id="policy_evader", explore=False)
+                            if CURRENT_STAGE == 1:
+                                # Stage 1 毕业标准：100% 截获直线直飞靶 (动作 0)
+                                action_E = 0
+                            elif CURRENT_STAGE == 2:
+                                # Stage 2 毕业标准：高概率截获持续 2G 水平盘旋靶 (动作 10)
+                                # 彻底切断与目标机进化网络的联系，保证考试难度的绝对静止！
+                                action_E = 10 
+                            else:
+                                # Stage 3 是终局无尽模式，可以使用双方最强神经网络互搏记录数据
+                                action_E = algo.compute_single_action(obs["evader_0"], policy_id="policy_evader", explore=False)
+                            
                             actions["evader_0"] = action_E
                             
                         obs, rewards, terminated, truncated, infos = TEST_ENV.step(actions)
@@ -336,8 +347,8 @@ if __name__ == "__main__":
                         success_count += 1
                 
                 eval_success_rate = success_count / TEST_EPISODES
-                print(f"--> 实测完成！真实击杀率: {eval_success_rate*100:.1f}% ({success_count}/{TEST_EPISODES})")
-                
+                print(f"--> [定标实测完成] 当前大脑对标准靶真实击杀率: {eval_success_rate*100:.1f}% ({success_count}/{TEST_EPISODES})")
+            
                 # 将真实的实测胜率写入 TensorBoard
                 tb_writer.add_scalar("2_Combat_Rates/Eval_Success_Rate", eval_success_rate * 100, real_iter)
                 
